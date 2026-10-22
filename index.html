@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Rotta Pullman</title>
+<meta name="description" content="Percorsi stradali per pullman turistici: calcolo in base a lunghezza, altezza e peso del mezzo, controllo dei punti critici e piano delle soste dell'autista.">
+<meta name="theme-color" content="#1d4f9c">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Overpass:wght@400;600;700&display=swap">
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div id="app">
+  <div id="map" aria-label="Mappa del percorso"></div>
+
+  <aside id="panel" class="panel" data-sheet="mid" aria-label="Pianificazione">
+    <div class="grip" id="grip" role="button" tabindex="0" aria-label="Espandi o riduci il pannello"><span></span></div>
+
+    <header class="panel-head" id="panel-head">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true">
+          <rect x="1" y="1" width="46" height="46" rx="9" fill="var(--accent)"/>
+          <path d="M10 15.5a3.5 3.5 0 0 1 3.5-3.5h21a3.5 3.5 0 0 1 3.5 3.5V33H10z" fill="#fff"/>
+          <rect x="13" y="15" width="22" height="8" rx="1.5" fill="var(--accent)"/>
+          <circle cx="16.5" cy="34" r="3.2" fill="#fff" stroke="var(--accent)" stroke-width="2"/>
+          <circle cx="31.5" cy="34" r="3.2" fill="#fff" stroke="var(--accent)" stroke-width="2"/>
+          <rect x="13" y="26" width="5" height="2.4" rx="1" fill="var(--accent)"/>
+          <rect x="30" y="26" width="5" height="2.4" rx="1" fill="var(--accent)"/>
+        </svg>
+        <div class="brand-text">
+          <strong>Rotta Pullman</strong>
+          <span id="mini-sum" class="mini-sum">Percorsi per bus turistici</span>
+        </div>
+      </div>
+    </header>
+
+    <nav class="tabs" role="tablist" aria-label="Sezioni">
+      <button role="tab" id="tab-viaggio" aria-controls="view-viaggio" aria-selected="true">Viaggio</button>
+      <button role="tab" id="tab-mezzo" aria-controls="view-mezzo" aria-selected="false" tabindex="-1">Mezzo</button>
+      <button role="tab" id="tab-percorso" aria-controls="view-percorso" aria-selected="false" tabindex="-1">Percorso <span class="tab-dot" id="tab-dot" hidden></span></button>
+    </nav>
+
+    <div class="panel-body" id="panel-body">
+      <!-- VIAGGIO -->
+      <section id="view-viaggio" role="tabpanel" aria-labelledby="tab-viaggio" class="view">
+        <button type="button" class="vehicle-strip" id="vehicle-strip">
+          <span class="vs-signs" id="vs-signs"></span>
+          <span class="vs-text"><span class="vs-name" id="vs-name"></span><span class="vs-edit">Cambia mezzo</span></span>
+        </button>
+
+        <div class="block">
+          <div class="block-head">
+            <h2>Tappe</h2>
+            <span class="chip chip-example" id="example-chip" hidden>Esempio</span>
+          </div>
+          <ol class="stops" id="stops"></ol>
+          <div class="row-actions">
+            <button type="button" class="btn-ghost" id="btn-add-stop">+ Aggiungi tappa</button>
+            <button type="button" class="btn-ghost" id="btn-reverse">⇅ Inverti</button>
+          </div>
+          <p class="hint">Scrivi un indirizzo o tocca la mappa per scegliere un punto. I segnaposto si possono trascinare.</p>
+        </div>
+
+        <div class="block grid-2">
+          <label class="field" for="in-departure"><span>Partenza</span>
+            <input type="datetime-local" id="in-departure">
+          </label>
+          <label class="field" for="in-breaks"><span>Pause dell'autista</span>
+            <select id="in-breaks">
+              <option value="legge">45′ ogni 4 h 30 di guida</option>
+              <option value="frazionata">Frazionate: 15′ + 30′</option>
+              <option value="doppio">Doppio autista</option>
+            </select>
+          </label>
+        </div>
+
+        <details class="block options" id="opt-details">
+          <summary>Preferenze di percorso</summary>
+          <div class="opt-list">
+            <label class="check" for="opt-hgv"><input type="checkbox" id="opt-hgv" checked>
+              <span><b>Evita strade vietate ai mezzi pesanti</b><small>Più prudente. Se il percorso non si trova, disattivala: molti divieti per i camion non valgono per i bus.</small></span>
+            </label>
+            <label class="check" for="opt-tolls"><input type="checkbox" id="opt-tolls"><span><b>Evita pedaggi</b></span></label>
+            <label class="check" for="opt-highways"><input type="checkbox" id="opt-highways"><span><b>Evita autostrade</b></span></label>
+            <label class="check" for="opt-ferries"><input type="checkbox" id="opt-ferries" checked><span><b>Evita traghetti</b></span></label>
+            <label class="field" for="opt-vmax"><span>Velocità massima del mezzo</span>
+              <select id="opt-vmax">
+                <option value="100">100 km/h (autostrada, bus oltre 8 t)</option>
+                <option value="90">90 km/h</option>
+                <option value="80">80 km/h</option>
+              </select>
+            </label>
+            <label class="field" for="opt-engine"><span>Servizio di calcolo</span>
+              <select id="opt-engine">
+                <option value="valhalla">Valhalla: gratuito, senza registrazione</option>
+                <option value="ors">openrouteservice: profilo bus, chiave gratuita</option>
+              </select>
+            </label>
+            <label class="field" for="opt-orskey" id="ors-key-field" hidden><span>Chiave openrouteservice</span>
+              <input type="text" id="opt-orskey" autocomplete="off" spellcheck="false" placeholder="Incolla qui la chiave">
+              <small>Si ottiene gratis su openrouteservice.org. Resta salvata solo su questo dispositivo.</small>
+            </label>
+          </div>
+        </details>
+
+        <div class="cta">
+          <button type="button" class="btn-primary" id="btn-route">Calcola percorso</button>
+          <p class="msg msg-error" id="route-error" role="alert" hidden></p>
+        </div>
+      </section>
+
+      <!-- MEZZO -->
+      <section id="view-mezzo" role="tabpanel" aria-labelledby="tab-mezzo" class="view" hidden>
+        <div class="sign-board" id="sign-board" aria-label="Dimensioni del mezzo"></div>
+
+        <label class="field block" for="in-preset"><span>Tipo di mezzo</span>
+          <select id="in-preset"></select>
+        </label>
+
+        <div class="block dims">
+          <label class="field" for="in-lunghezza"><span>Lunghezza</span><span class="unit"><input type="number" id="in-lunghezza" inputmode="decimal" step="0.1" min="6" max="25"><em>m</em></span></label>
+          <label class="field" for="in-altezza"><span>Altezza</span><span class="unit"><input type="number" id="in-altezza" inputmode="decimal" step="0.05" min="2.5" max="4.5"><em>m</em></span></label>
+          <label class="field" for="in-larghezza"><span>Larghezza</span><span class="unit"><input type="number" id="in-larghezza" inputmode="decimal" step="0.01" min="2" max="2.6"><em>m</em></span></label>
+          <label class="field" for="in-peso"><span>Massa a pieno carico</span><span class="unit"><input type="number" id="in-peso" inputmode="decimal" step="0.5" min="3.5" max="40"><em>t</em></span></label>
+          <label class="field" for="in-caricoAsse"><span>Carico per asse</span><span class="unit"><input type="number" id="in-caricoAsse" inputmode="decimal" step="0.5" min="5" max="13"><em>t</em></span></label>
+          <label class="field" for="in-assi"><span>Assi</span><span class="unit"><input type="number" id="in-assi" inputmode="numeric" step="1" min="2" max="5"><em>n.</em></span></label>
+        </div>
+
+        <label class="field block" for="in-margin"><span>Margine di sicurezza in altezza</span>
+          <select id="in-margin">
+            <option value="0">Nessuno</option>
+            <option value="0.05">5 cm</option>
+            <option value="0.1">10 cm</option>
+            <option value="0.2">20 cm</option>
+            <option value="0.3">30 cm</option>
+          </select>
+          <small>Si somma all'altezza nel calcolo del percorso: utile per box sul tetto, antenne o neve.</small>
+        </label>
+        <p class="hint">I valori dei mezzi tipo sono indicativi: controlla la carta di circolazione.</p>
+
+        <div class="block garage">
+          <h2>Il mio garage</h2>
+          <div class="garage-save">
+            <input type="text" id="in-vname" placeholder="Nome, es. Setra 517 · AB123CD" maxlength="60" aria-label="Nome del mezzo">
+            <button type="button" class="btn-secondary" id="btn-save-vehicle">Salva</button>
+          </div>
+          <ul class="garage-list" id="garage-list"></ul>
+        </div>
+      </section>
+
+      <!-- PERCORSO -->
+      <section id="view-percorso" role="tabpanel" aria-labelledby="tab-percorso" class="view" hidden>
+        <div class="empty" id="res-empty">
+          <p><b>Nessun percorso calcolato.</b></p>
+          <p>Inserisci le tappe nella scheda Viaggio e premi “Calcola percorso”.</p>
+        </div>
+
+        <div id="res" hidden>
+          <div class="stale" id="stale" hidden>
+            <span>Hai cambiato mezzo o preferenze.</span>
+            <button type="button" class="btn-secondary" id="btn-recalc">Ricalcola</button>
+          </div>
+
+          <div class="summary">
+            <div class="kpi"><span class="kpi-val" id="sum-km">—</span><span class="kpi-lab">distanza</span></div>
+            <div class="kpi"><span class="kpi-val" id="sum-drive">—</span><span class="kpi-lab">di guida</span></div>
+            <div class="kpi"><span class="kpi-val" id="sum-arrive">—</span><span class="kpi-lab">arrivo</span></div>
+          </div>
+          <div class="chips" id="sum-chips"></div>
+
+          <div class="osm-check" id="check-banner" role="status"></div>
+
+          <div class="res-actions">
+            <button type="button" class="btn-secondary" id="btn-gpx">Scarica GPX</button>
+            <button type="button" class="btn-secondary" id="btn-share">Copia link</button>
+            <button type="button" class="btn-secondary" id="btn-print">Foglio di viaggio</button>
+          </div>
+
+          <section class="res-sec">
+            <h2>Programma</h2>
+            <ol class="timeline" id="timeline"></ol>
+            <ul class="warnings" id="warnings"></ul>
+          </section>
+
+          <section class="res-sec">
+            <h2>Punti critici <span class="count" id="hz-count"></span></h2>
+            <ul class="hazards" id="hazards"></ul>
+          </section>
+
+          <section class="res-sec">
+            <h2>Parcheggi bus vicino alle tappe</h2>
+            <ul class="parkings" id="parkings"></ul>
+          </section>
+
+          <details class="res-sec steps-wrap" id="steps-wrap">
+            <summary>Indicazioni svolta per svolta <span class="count" id="steps-count"></span></summary>
+            <ol class="steps" id="steps"></ol>
+          </details>
+
+          <p class="note"><b>ZTL e permessi.</b> Molte città d'arte chiedono un permesso o una prenotazione per i bus turistici e indicano aree di carico e scarico dedicate. Controlla sempre il sito del comune di destinazione.</p>
+        </div>
+      </section>
+
+      <footer class="panel-foot">
+        <p>Dati © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">contributori OpenStreetMap</a>. Calcolo: <a href="https://valhalla1.openstreetmap.de" target="_blank" rel="noopener">Valhalla FOSSGIS</a> o <a href="https://openrouteservice.org" target="_blank" rel="noopener">openrouteservice</a>; ricerca: Photon; controlli: Overpass API.</p>
+        <p>Strumento di supporto alla pianificazione: le mappe possono essere incomplete. Segui sempre la segnaletica stradale.</p>
+      </footer>
+    </div>
+  </aside>
+
+  <div class="print-head" id="print-head"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</div>
+
+<script src="vendor/leaflet/leaflet.js"></script>
+<script src="js/core.js"></script>
+<script src="js/services.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
