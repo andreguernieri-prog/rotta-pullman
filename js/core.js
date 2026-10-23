@@ -251,6 +251,21 @@
     return cumT;
   }
 
+  /* divide il percorso in tratti di circa maxM metri (i tratti condividono il punto di confine) */
+  function splitByDistance(coords, cumD, maxM) {
+    const out = [];
+    const n = coords.length;
+    if (n < 2) return out;
+    let start = 0;
+    for (let i = 1; i < n; i++) {
+      if (cumD[i] - cumD[start] >= maxM || i === n - 1) {
+        out.push({ from: start, to: i, coords: coords.slice(start, i + 1) });
+        start = i;
+      }
+    }
+    return out;
+  }
+
   function interp(xs, ys, x) {
     const n = xs.length;
     if (!n) return 0;
@@ -788,7 +803,7 @@
   return {
     PRESETS, LIMITS, RULES, sanitizeVehicle,
     haversine, bearing, decodePolyline, encodePolyline, simplify, RouteIndex,
-    buildCumTime, normalizeValhalla, normalizeOrs, finishRoute, timeAtAlong, alongAtTime,
+    buildCumTime, splitByDistance, normalizeValhalla, normalizeOrs, finishRoute, timeAtAlong, alongAtTime,
     parseLength, parseWeight, evaluateTags, hasRestrictionTags, wayRelation, analyzeElements,
     planTrip, fmtDur, fmtDist, fmtClock, fmtNum, stopLetter, parseCoords,
     buildGpx, encodeShare, decodeShare,

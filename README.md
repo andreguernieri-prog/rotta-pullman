@@ -31,8 +31,8 @@ Tutti gratuiti e basati su dati OpenStreetMap. Sono servizi pubblici con uso "ra
 | Calcolo percorso | [Valhalla FOSSGIS](https://valhalla1.openstreetmap.de) (profilo mezzo pesante) | Predefinito, nessuna chiave |
 | Calcolo percorso, alternativa | [openrouteservice](https://openrouteservice.org) (profilo HGV, tipo veicolo *bus*) | Chiave gratuita, 2.000 calcoli/giorno. Tiene conto anche degli accessi riservati ai bus |
 | Ricerca indirizzi | Photon (komoot), riserva Nominatim | |
-| Punti critici, aree di servizio, parcheggi | Overpass API | Con server di riserva |
-| Mappe | CARTO Voyager, OpenStreetMap, Esri (satellite) | |
+| Punti critici, aree di servizio, parcheggi | Overpass API | Un tratto di circa 25 km alla volta, con server di riserva |
+| Mappe | OpenStreetMap, Esri (stradale e satellite) | Senza chiave. Le mappe OpenStreetMap funzionano dal sito pubblicato; aprendo il file dal disco si parte con Esri |
 
 Per un uso intenso conviene un'istanza Valhalla propria o un abbonamento a un servizio di calcolo: basta cambiare gli indirizzi in `js/services.js`.
 

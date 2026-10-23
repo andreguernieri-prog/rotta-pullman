@@ -34,7 +34,7 @@ function serve() {
 
 /* ---------------- servizi simulati ---------------- */
 const VIA_A1 = [[45.4860, 9.2044], [45.40, 9.33], [45.31, 9.50], [45.05, 9.70], [44.80, 10.33], [44.65, 10.93], [44.50, 11.34], [44.25, 11.30], [43.95, 11.20], [43.7629, 11.2650]];
-const mocks = { forceRouteError: false, lastCoords: null };
+const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0 };
 
 function densify(pts, step) {
   const out = [];
@@ -147,9 +147,15 @@ async function setupRoutes(context) {
     if (url.includes('nominatim.openstreetmap.org')) return json([]);
     if (url.includes('/api/interpreter')) {
       const data = new URLSearchParams(route.request().postData() || '').get('data') || '';
+      if (!/amenity=parking/.test(data)) {
+        mocks.corridorCalls++;
+        if (mocks.failCorridor.has(mocks.corridorCalls)) return route.fulfill({ status: 504, contentType: 'text/html', body: 'Gateway Timeout' });
+        if (mocks.delay) await new Promise((r) => setTimeout(r, mocks.delay));
+        mocks.corridorSeen = Math.max(mocks.corridorSeen, (data.match(/way\(around:10,/g) || []).length);
+      }
       return json(mockOverpass(data));
     }
-    if (/basemaps\.cartocdn\.com|tile\.openstreetmap\.org|arcgisonline/.test(url)) return route.fulfill({ status: 200, contentType: 'image/png', body: tilePng });
+    if (/tile\.openstreetmap\.org|arcgisonline/.test(url)) return route.fulfill({ status: 200, contentType: 'image/png', body: tilePng });
     if (url.startsWith('https://fonts.googleapis.com/') && FONTS) {
       const faces = [['Barlow Condensed', 'barlow-condensed', [500, 600, 700]], ['Overpass', 'overpass', [400, 600, 700]]]
         .flatMap(([fam, dir, ws]) => ws.map((w) => `@font-face{font-family:'${fam}';font-weight:${w};font-style:normal;font-display:swap;src:url(https://fonts.gstatic.com/local/${dir}/files/${dir}-latin-${w}-normal.woff2) format('woff2')}`));
@@ -285,6 +291,40 @@ async function setupRoutes(context) {
     await p.click('.pt-menu button:has-text("Arrivo")');
     await p.waitForFunction(() => /Viale Galileo/.test(document.querySelector('#stops').innerHTML) || /Viale Galileo/.test(JSON.stringify(window.__rp.state.stops)));
   });
+
+  /* --- un tratto del controllo non risponde, poi si riprova --- */
+  await phone.close(); // il contatore delle richieste simulate è condiviso: niente altre pagine attive
+  {
+    const rctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: 'it-IT', timezoneId: 'Europe/Rome' });
+    await setupRoutes(rctx);
+    mocks.corridorCalls = 0;
+    mocks.failCorridor = new Set([2, 3, 4]); // il 2° tratto fallisce su tutti e tre i server
+    const q = await rctx.newPage();
+    watch(q, 'tratto mancante');
+    await q.goto(base);
+    mocks.delay = 250;
+    await q.waitForSelector('#check-banner .progress', { timeout: 15000 });
+    await q.waitForTimeout(1200);
+    await q.screenshot({ path: path.join(OUT, '8-controllo-in-corso.png') });
+    mocks.delay = 0;
+    await step('controllo a tratti: un tratto senza risposta si può riprovare', async () => {
+      const total = await q.evaluate(async () => {
+        while (!window.__rp.state.route || !window.__rp.state.route.segments) await new Promise((r) => setTimeout(r, 50));
+        return window.__rp.state.route.segments.length;
+      });
+      assert.ok(total >= 10, `tratti: ${total}`);
+      await q.waitForSelector('#check-banner button:has-text("Verifica i tratti mancanti")', { timeout: 20000 });
+      assert.match(await q.textContent('#check-banner'), new RegExp(`1 tratto su ${total} non verificato`));
+      await q.screenshot({ path: path.join(OUT, '9-tratto-mancante.png') });
+      assert.equal(await q.locator('#hazards .hz').count(), 3); // gli altri tratti hanno comunque dato i risultati
+      mocks.failCorridor = new Set();
+      await q.click('#check-banner button');
+      await q.waitForFunction(() => window.__rp.state.analysis.status === 'done');
+      assert.doesNotMatch(await q.textContent('#check-banner'), /mancanti/);
+      assert.equal(await q.locator('.leaflet-tile-container img[src*="tile.openstreetmap.org"]').count() > 0, true);
+    });
+    await rctx.close();
+  }
 
   /* --- tema scuro --- */
   const dark = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, colorScheme: 'dark', locale: 'it-IT', timezoneId: 'Europe/Rome' });

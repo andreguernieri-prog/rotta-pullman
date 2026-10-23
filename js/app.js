@@ -70,7 +70,7 @@
     isExample: saved.stops ? !!saved.example : true,
     departure: validDeparture(saved.departure),
     garage: Array.isArray(saved.garage) ? saved.garage : [],
-    base: saved.base || 'stradale',
+    base: saved.base || (location.protocol === 'file:' ? 'esri' : 'stradale'),
     route: null, plan: null, analysis: null, parkings: null, stale: false,
   };
 
@@ -184,12 +184,14 @@
   const map = L.map('map', { zoomControl: false, attributionControl: false, worldCopyJump: true, tapTolerance: 20 }).setView([42.9, 12.4], 6);
 
   const OSM_LINK = '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>';
+  // Mappe che non richiedono chiavi. Quelle di OpenStreetMap chiedono che la pagina sia su un sito web:
+  // aprendo il file dal disco si parte con quelle Esri.
   const BASES = {
-    stradale: { nome: 'Stradale', make: () => L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', { subdomains: 'abcd', maxZoom: 20, attribution: OSM_LINK + ' © <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>' }) },
-    osm: { nome: 'OpenStreetMap', make: () => L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: OSM_LINK }) },
+    stradale: { nome: 'Stradale · OpenStreetMap', make: () => L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: OSM_LINK }) },
+    esri: { nome: 'Stradale · Esri', make: () => L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, maxNativeZoom: 18, attribution: 'Mappa © Esri, HERE, Garmin, ' + OSM_LINK }) },
     satellite: { nome: 'Satellite', make: () => L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 20, maxNativeZoom: 18, attribution: 'Immagini © Esri, Maxar, Earthstar Geographics' }) },
   };
-  if (!BASES[state.base]) state.base = 'stradale';
+  if (!BASES[state.base]) state.base = 'stradale'; // anche per chi aveva salvato le vecchie mappe CARTO
   let baseLayer = BASES[state.base].make().addTo(map);
   function setBase(key) {
     if (!BASES[key]) return;
@@ -874,26 +876,48 @@
   $('#btn-route').addEventListener('click', computeRoute);
   $('#btn-recalc').addEventListener('click', computeRoute);
 
-  async function runAnalysis(my, signal) {
+  /*
+   * Controllo dei limiti un tratto alla volta (circa 25 km): richieste brevi che i server
+   * pubblici completano in pochi secondi. I risultati compaiono man mano; i tratti senza
+   * risposta si possono riprovare da soli.
+   */
+  async function runAnalysis(my, signal, only) {
     const r = state.route;
-    if (r.distanceM > 1500e3) {
-      state.analysis = { status: 'skipped', reason: 'Il percorso supera i 1.500 km: per il controllo automatico dividilo in più giorni con tappe intermedie.' };
+    if (r.distanceM > 2500e3) {
+      state.analysis = { status: 'skipped', reason: 'Il percorso supera i 2.500 km: per il controllo automatico dividilo in più giorni con tappe intermedie.' };
       renderCheck(); renderHazards(); return;
     }
-    try {
-      const els = await API.corridor(r.coords, signal);
-      if (my !== seq) return;
-      const a = C.analyzeElements(els, r.index, r.vehicle);
-      for (const s of a.services) s.T = C.timeAtAlong(r, s.along);
-      state.analysis = Object.assign({ status: 'done' }, a);
-      drawHazards();
-      replan();
-      renderResult();
-    } catch (e) {
-      if (my !== seq || e.code === 'aborted') return;
-      state.analysis = { status: 'error', reason: e.message };
-      renderCheck(); renderHazards(); renderMini();
+    if (!r.segments) r.segments = C.splitByDistance(r.coords, r.cumD, Math.max(25000, r.distanceM / 40));
+    const prev = state.analysis || {};
+    const elements = prev.elements instanceof Map ? prev.elements : new Map();
+    const todo = only || r.segments.map((_, i) => i);
+    const a = Object.assign({}, prev.hazards ? prev : {}, { status: 'loading', elements, done: 0, total: todo.length, failed: [] });
+    state.analysis = a;
+    renderCheck(); renderHazards();
+    for (const i of todo) {
+      try {
+        const els = await API.corridor(r.segments[i].coords, signal);
+        if (my !== seq || state.analysis !== a) return;
+        for (const el of els) elements.set(el.type + '/' + el.id, el);
+      } catch (e) {
+        if (my !== seq || state.analysis !== a || e.code === 'aborted') return;
+        a.failed.push(i);
+        a.lastError = e.message;
+      }
+      a.done++;
+      Object.assign(a, C.analyzeElements(Array.from(elements.values()), r.index, r.vehicle));
+      for (const sv of a.services) sv.T = C.timeAtAlong(r, sv.along);
+      drawHazards(); renderCheck(); renderHazards(); renderMini();
     }
+    a.status = !a.failed.length ? 'done' : (a.failed.length === todo.length && !elements.size ? 'error' : 'partial');
+    if (a.status === 'error') a.reason = a.lastError;
+    replan();
+    renderResult();
+  }
+
+  function retryAnalysis(only) {
+    if (!state.route) return;
+    runAnalysis(seq, workCtrl ? workCtrl.signal : undefined, only);
   }
 
   async function runParkings(my, signal) {
@@ -961,7 +985,7 @@
   function drawHazards() {
     lg.hazards.clearLayers();
     const a = state.analysis;
-    if (!a || a.status !== 'done') return;
+    if (!a || !a.hazards) return;
     for (const hz of a.hazards) {
       const icon = L.divIcon({ className: '', html: `<div class="hz-marker ${hz.severity}">${hazardSign(hz)}</div>`, iconSize: [30, 30], iconAnchor: [15, 15], popupAnchor: [0, -14] });
       L.marker([hz.lat, hz.lon], { icon, zIndexOffset: hz.severity === 'red' ? 600 : 500, title: hz.title })
@@ -1020,7 +1044,7 @@
   /* ------------------------------------------------------------------ */
   function hazardCounts() {
     const a = state.analysis;
-    if (!a || a.status !== 'done') return null;
+    if (!a || !a.hazards) return null;
     return { red: a.hazards.filter((x) => x.severity === 'red').length, amber: a.hazards.filter((x) => x.severity === 'amber').length };
   }
 
@@ -1061,38 +1085,53 @@
     else if (c && c.amber) { mini.append(' · ', h('span', { class: 'sev-amber', text: `${c.amber} da verificare` })); dot.className = 'tab-dot sev-amber'; }
   }
 
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
   function renderCheck() {
     const box = $('#check-banner');
     const a = state.analysis;
     box.className = 'osm-check';
     box.replaceChildren();
     const body = h('p');
+    const c = hazardCounts();
     if (!a || a.status === 'loading') {
       box.classList.add('loading');
-      body.append(h('b', { text: 'Controllo dei limiti in corso…' }), 'Cerco su OpenStreetMap limiti di altezza, larghezza, lunghezza, massa e divieti per bus lungo tutto il percorso.');
-    } else if (a.status === 'done') {
-      const c = hazardCounts();
+      const tot = a && a.total;
+      body.append(
+        h('b', { text: tot ? `Controllo dei limiti: tratto ${Math.min(a.done + 1, tot)} di ${tot}` : 'Controllo dei limiti in corso…' }),
+        'Cerco su OpenStreetMap limiti di altezza, larghezza, lunghezza, massa e divieti per bus lungo tutto il percorso.');
+      if (tot) {
+        body.append(h('span', { class: 'progress', role: 'progressbar', 'aria-label': 'Avanzamento del controllo', 'aria-valuemin': 0, 'aria-valuemax': tot, 'aria-valuenow': a.done },
+          h('span', { style: `width:${Math.round((a.done / tot) * 100)}%` })));
+      }
+      if (c && (c.red || c.amber)) body.append(h('span', { class: 'so-far', text: `Finora: ${plural(c.red, 'non transitabile', 'non transitabili')}, ${c.amber} da verificare.` }));
+    } else if (a.status === 'done' || a.status === 'partial') {
       if (c.red) {
         box.classList.add('red');
-        body.append(h('b', { text: `${c.red} ${c.red === 1 ? 'punto non transitabile' : 'punti non transitabili'} per questo mezzo` }),
+        body.append(h('b', { text: `${plural(c.red, 'punto non transitabile', 'punti non transitabili')} per questo mezzo` }),
           'Secondo OpenStreetMap ci sono limiti incompatibili sul percorso. Controlla l\'elenco qui sotto e sposta o aggiungi tappe per evitarli.');
       } else if (c.amber) {
         box.classList.add('amber');
-        body.append(h('b', { text: `${c.amber} ${c.amber === 1 ? 'punto da verificare' : 'punti da verificare'}` }),
+        body.append(h('b', { text: plural(c.amber, 'punto da verificare', 'punti da verificare') }),
           'Nessun limite incompatibile, ma ci sono passaggi con margini stretti o divieti da controllare sul cartello.');
-      } else {
+      } else if (a.status === 'done') {
         box.classList.add('ok');
         body.append(h('b', { text: 'Nessun limite incompatibile trovato' }),
-          `Controllati ${a.checked} ${a.checked === 1 ? 'tratto' : 'tratti'} con limiti lungo il percorso. I dati possono essere incompleti: segui sempre la segnaletica.`);
+          (a.checked ? `Lungo il percorso ci sono ${plural(a.checked, 'limite segnalato', 'limiti segnalati')}, tutti compatibili con questo mezzo. ` : 'Nessun limite segnalato lungo il percorso. ') +
+          'I dati possono essere incompleti: segui sempre la segnaletica.');
+      } else {
+        body.append(h('b', { text: 'Nessun limite incompatibile nei tratti controllati' }));
+      }
+      if (a.status === 'partial') {
+        const tot = state.route.segments.length;
+        body.append(
+          h('span', { class: 'so-far', text: `${plural(a.failed.length, 'tratto', 'tratti')} su ${tot} non ${a.failed.length === 1 ? 'verificato' : 'verificati'}: i server OpenStreetMap non hanno risposto.` }),
+          h('button', { type: 'button', class: 'btn-ghost', onclick: () => retryAnalysis(a.failed.slice()) }, 'Verifica i tratti mancanti'));
       }
     } else {
       body.append(h('b', { text: a.status === 'skipped' ? 'Controllo dei limiti non eseguito' : 'Controllo dei limiti non riuscito' }), a.reason || '');
       if (a.status === 'error') {
-        body.append(h('br'), h('button', { type: 'button', class: 'btn-ghost', onclick: () => {
-          if (!state.route) return;
-          state.analysis = { status: 'loading' }; renderCheck(); renderHazards();
-          runAnalysis(seq, workCtrl ? workCtrl.signal : undefined);
-        } }, 'Riprova il controllo'));
+        body.append(h('br'), h('button', { type: 'button', class: 'btn-ghost', onclick: () => { state.analysis = null; retryAnalysis(); } }, 'Riprova il controllo'));
       }
     }
     box.append(body);
@@ -1150,9 +1189,14 @@
     ul.replaceChildren();
     cnt.textContent = '';
     const a = state.analysis;
-    if (!a || a.status === 'loading') { ul.append(h('li', { class: 'none' }, 'Controllo in corso…')); return; }
-    if (a.status !== 'done') { ul.append(h('li', { class: 'none' }, 'Elenco non disponibile.')); return; }
-    if (!a.hazards.length) { ul.append(h('li', { class: 'none' }, 'Nessun punto critico per questo mezzo nei dati di OpenStreetMap.')); return; }
+    const loading = !a || a.status === 'loading';
+    if (!a || !a.hazards) { ul.append(h('li', { class: 'none' }, loading ? 'Controllo in corso…' : 'Elenco non disponibile.')); return; }
+    if (!a.hazards.length) {
+      ul.append(h('li', { class: 'none' }, loading ? 'Nessun punto critico finora, il controllo continua…'
+        : a.status === 'partial' ? 'Nessun punto critico nei tratti controllati.'
+          : 'Nessun punto critico per questo mezzo nei dati di OpenStreetMap.'));
+      return;
+    }
     cnt.textContent = String(a.hazards.length);
     for (const hz of a.hazards) {
       const km = hz.alongStart / 1000;
@@ -1170,6 +1214,7 @@
             h('a', { href: `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${hz.lat.toFixed(6)},${hz.lon.toFixed(6)}`, target: '_blank', rel: 'noopener' }, 'Street View'),
             h('a', { href: `https://www.openstreetmap.org/${osm[0]}/${osm[1]}`, target: '_blank', rel: 'noopener' }, 'Dati OSM')))));
     }
+    if (loading) ul.append(h('li', { class: 'none' }, 'Controllo degli altri tratti in corso…'));
   }
 
   function renderParkings() {
@@ -1178,7 +1223,15 @@
     const p = state.parkings;
     const r = state.route;
     if (!p || p.status === 'loading') { ul.append(h('li', { class: 'none' }, 'Ricerca dei parcheggi in corso…')); return; }
-    if (p.status !== 'done') { ul.append(h('li', { class: 'none' }, 'Ricerca dei parcheggi non riuscita. ' + (p.reason || ''))); return; }
+    if (p.status !== 'done') {
+      ul.append(h('li', { class: 'none' }, 'Ricerca dei parcheggi non riuscita. ' + (p.reason || '') + ' ',
+        h('button', { type: 'button', class: 'btn-ghost', onclick: () => {
+          if (!state.route) return;
+          state.parkings = { status: 'loading' }; renderParkings();
+          runParkings(seq, workCtrl ? workCtrl.signal : undefined);
+        } }, 'Riprova')));
+      return;
+    }
     let any = false;
     for (const g of p.groups) {
       const s = r.stops[g.stop];
@@ -1236,7 +1289,7 @@
     const wps = r.stops.map((s, i) => ({ lat: s.lat, lon: s.lon, name: `${C.stopLetter(i)} · ${s.label}` }));
     for (const ev of state.plan.events) if (ev.type === 'pausa' && ev.lat != null) wps.push({ lat: ev.lat, lon: ev.lon, name: `Pausa ${ev.minutes}′ · ${ev.place ? ev.place.name : 'area idonea'}` });
     const a = state.analysis;
-    if (a && a.status === 'done') for (const hz of a.hazards) wps.push({ lat: hz.lat, lon: hz.lon, name: `${hz.severity === 'red' ? 'ATTENZIONE' : 'Verifica'}: ${hz.title}`, desc: hz.detail });
+    if (a && a.hazards) for (const hz of a.hazards) wps.push({ lat: hz.lat, lon: hz.lon, name: `${hz.severity === 'red' ? 'ATTENZIONE' : 'Verifica'}: ${hz.title}`, desc: hz.detail });
     const gpx = C.buildGpx({ name: tripTitle(), desc: vehicleLine(r.vehicle, r.margin), coords: r.coords, waypoints: wps });
     const blob = new Blob([gpx], { type: 'application/gpx+xml' });
     const url = URL.createObjectURL(blob);

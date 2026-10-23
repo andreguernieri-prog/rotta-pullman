@@ -197,22 +197,43 @@
   }
 
   /* ------------------------------ Overpass ------------------------------ */
+  const sleep = (ms, signal) => new Promise((resolve, reject) => {
+    const t = setTimeout(resolve, ms);
+    if (signal) signal.addEventListener('abort', () => { clearTimeout(t); reject(new ServiceError('Operazione annullata.', 'aborted')); }, { once: true });
+  });
+
+  // l'ultimo server che ha risposto bene viene provato per primo
+  let preferredOverpass = null;
+  function overpassOrder() {
+    const list = URLS.overpass.slice();
+    if (preferredOverpass) { list.splice(list.indexOf(preferredOverpass), 1); list.unshift(preferredOverpass); }
+    return list;
+  }
+
   async function overpass(query, signal, timeoutMs) {
     let last = null;
-    for (const ep of URLS.overpass) {
-      try {
-        const r = await request(ep, { method: 'POST', body: new URLSearchParams({ data: query }), signal }, timeoutMs || 120000);
-        if (r.ok && r.data && Array.isArray(r.data.elements)) {
-          if (r.data.remark && /runtime error|timed out|out of memory/i.test(r.data.remark)) { last = new ServiceError('Controllo troppo pesante per il server OpenStreetMap.', 'heavy'); continue; }
-          return r.data;
+    for (const ep of overpassOrder()) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const r = await request(ep, { method: 'POST', body: new URLSearchParams({ data: query }), signal }, timeoutMs || 60000);
+          if (r.ok && r.data && Array.isArray(r.data.elements)) {
+            if (r.data.remark && /runtime error|timed out|out of memory/i.test(r.data.remark)) {
+              last = new ServiceError('Il server OpenStreetMap non ha completato il controllo.', 'heavy');
+              break;
+            }
+            preferredOverpass = ep;
+            return r.data;
+          }
+          if (r.status === 429 && attempt === 0) { await sleep(3000, signal); continue; } // server pieno: si riprova una volta
+          last = new ServiceError(r.status === 429 ? 'I server OpenStreetMap sono occupati.' : 'I server OpenStreetMap non rispondono.', 'overpass');
+        } catch (e) {
+          if (e.code === 'aborted') throw e;
+          last = e;
         }
-        last = new ServiceError(r.status === 429 ? 'Server OpenStreetMap occupato.' : 'Server OpenStreetMap non disponibile.', 'overpass');
-      } catch (e) {
-        if (e.code === 'aborted') throw e;
-        last = e;
+        break;
       }
     }
-    throw last || new ServiceError('Server OpenStreetMap non disponibile.', 'overpass');
+    throw last || new ServiceError('I server OpenStreetMap non rispondono.', 'overpass');
   }
 
   const RESTRICTION_KEYS = '^(maxheight|maxheight:physical|maxwidth|maxwidth:physical|maxlength|maxweight|maxweightrating|maxaxleload)$';
@@ -226,13 +247,14 @@
     return out;
   }
 
-  /* limiti lungo il percorso + aree di servizio raggiungibili */
+  /* limiti lungo un tratto di percorso + aree di servizio raggiungibili */
+  const CORRIDOR_TIMEOUT = 50;
   function corridorQuery(coords) {
-    const fine = chunks(C.simplify(coords, 4), 300);
-    const coarse = chunks(C.simplify(coords, 60), 300);
+    const fine = chunks(C.simplify(coords, 4), 250);
+    const coarse = chunks(C.simplify(coords, 60), 250);
     const near = fine.map((c) => `  way(around:10,${lineArg(c)})[highway];`).join('\n');
     const svc = coarse.map((c) => `  nw(around:400,${lineArg(c)})[highway~"^(services|rest_area)$"];`).join('\n');
-    return `[out:json][timeout:170];
+    return `[out:json][timeout:${CORRIDOR_TIMEOUT}];
 (
 ${near}
 )->.near;
@@ -248,8 +270,9 @@ ${svc}
 .svc out body center;`;
   }
 
+  /* un tratto alla volta: richieste brevi, che i server pubblici accettano senza scadere */
   async function corridor(coords, signal) {
-    const data = await overpass(corridorQuery(coords), signal, 180000);
+    const data = await overpass(corridorQuery(coords), signal, (CORRIDOR_TIMEOUT + 15) * 1000);
     return data.elements;
   }
 
@@ -261,12 +284,12 @@ ${svc}
   nw(${a})[amenity=parking][parking~"^(bus|coach)"];
   nw(${a})[amenity=parking][hgv~"^(yes|designated)$"];`;
     }).join('\n');
-    const q = `[out:json][timeout:40];
+    const q = `[out:json][timeout:25];
 (
 ${parts}
 );
 out body center;`;
-    const data = await overpass(q, signal, 45000);
+    const data = await overpass(q, signal, 35000);
     return data.elements;
   }
 

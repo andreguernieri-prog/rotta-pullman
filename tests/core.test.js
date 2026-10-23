@@ -100,6 +100,17 @@ test('analisi Overpass: punti critici e aree di servizio', () => {
   assert.deepEqual(a.services.map((s) => s.name), ['Area Est']);
 });
 
+test('percorso diviso in tratti per il controllo', () => {
+  const coords = straightRoute(45, 9, 1000, 0.001); // ~110 km
+  const idx = new C.RouteIndex(coords);
+  const segs = C.splitByDistance(coords, idx.cumD, 25000);
+  assert.equal(segs.length, 5);
+  assert.equal(segs[0].from, 0);
+  assert.equal(segs[segs.length - 1].to, coords.length - 1);
+  for (let i = 1; i < segs.length; i++) assert.equal(segs[i].from, segs[i - 1].to);
+  assert.equal(C.splitByDistance([[45, 9], [45.001, 9]], Float64Array.from([0, 111]), 25000).length, 1);
+});
+
 test('tempi di guida distribuiti sui segmenti', () => {
   const cumD = Float64Array.from([0, 100, 300, 600]);
   const cumT = C.buildCumTime(cumD, [{ from: 0, to: 2, durS: 30 }, { from: 2, to: 3, durS: 60 }], 90);

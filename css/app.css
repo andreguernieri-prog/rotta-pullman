@@ -281,6 +281,9 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 .osm-check.loading::before { background: none; border-radius: 50%; border: 3px solid var(--accent); border-right-color: transparent; animation: spin .9s linear infinite; box-sizing: border-box; width: 24px; height: 24px; margin: 2px; }
 @keyframes pulse { 50% { opacity: .35; } }
 .osm-check p { margin: 0; }
+.osm-check .progress { display: block; height: 6px; margin-top: 10px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.osm-check .progress span { display: block; height: 100%; background: var(--accent); transition: width .3s ease; }
+.osm-check .so-far { display: block; margin-top: 6px; font-weight: 600; }
 .osm-check b { display: block; }
 .osm-check .btn-ghost { padding: 0; height: auto; margin-top: 4px; }
 
