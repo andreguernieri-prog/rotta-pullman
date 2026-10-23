@@ -226,3 +226,46 @@ test('GPX con caratteri speciali', () => {
   assert.match(g, /Sant&apos;Anna/);
   assert.equal((g.match(/<trkpt/g) || []).length, 2);
 });
+
+test('permessi: riconoscimento del comune', () => {
+  global.self = global;
+  require('../js/permessi.js');
+  const regole = global.RPPermessi.regole;
+  assert.equal(C.matchPermit({ nome: 'Firenze', prov: 'FI', paese: 'IT' }, regole).id, 'firenze');
+  assert.equal(C.matchPermit({ nome: 'firenze' }, regole).id, 'firenze'); // senza provincia
+  assert.equal(C.matchPermit({ nome: 'Firenze', prov: 'PO' }, regole), null); // omonimo in altra provincia
+  assert.equal(C.matchPermit({ nome: 'Vietri sul Mare', prov: 'SA' }, regole).id, 'costiera-amalfitana');
+  assert.equal(C.matchPermit({ nome: 'Roma', paese: 'FR' }, regole), null);
+  assert.equal(C.matchPermit({ nome: 'Cremona', prov: 'CR' }, regole), null);
+  assert.equal(C.normName("Sant'Agata de' Goti"), 'sant agata de goti');
+  assert.equal(C.normName('Cefalù'), 'cefalu');
+});
+
+test('permessi: tappe raggruppate per comune, destinazione per prima', () => {
+  const regole = global.RPPermessi.regole;
+  const places = [{ nome: 'Milano', prov: 'MI' }, { nome: 'Bologna', prov: 'BO' }, null, { nome: 'Firenze', prov: 'FI' }, { nome: 'Milano', prov: 'MI' }];
+  const g = C.groupPermits(places, regole);
+  assert.deepEqual(g.map((x) => x.rule && x.rule.id), ['milano', 'bologna', null, 'firenze']);
+  assert.deepEqual(g[0].stops, [0, 4]);
+  assert.equal(C.groupPermits([{ nome: 'Pisa', prov: 'PI' }, { nome: 'Lucca', prov: 'LU' }], regole)[0].rule.id, 'lucca');
+});
+
+test('permessi: archivio completo e coerente', () => {
+  const P = global.RPPermessi;
+  assert.match(P.verificato, /^\d{4}-\d{2}-\d{2}$/);
+  const ids = new Set();
+  const seen = new Set();
+  for (const r of P.regole) {
+    assert.ok(!ids.has(r.id), 'id doppio ' + r.id); ids.add(r.id);
+    assert.ok(['permesso', 'limitato', 'verifica'].includes(r.stato), r.id);
+    assert.ok(r.titolo && r.sintesi, r.id);
+    assert.ok(Array.isArray(r.passi) && r.passi.length >= 1, r.id);
+    assert.ok(r.link.length >= 1 && r.link.every((l) => /^https:\/\//.test(l.url) && l.testo), r.id);
+    assert.ok(['confermato', 'parziale'].includes(r.affidabilita), r.id);
+    for (const c of r.comuni) {
+      assert.match(c.prov, /^[A-Z]{2}$/, r.id);
+      const k = C.normName(c.nome) + c.prov;
+      assert.ok(!seen.has(k), 'comune doppio ' + c.nome); seen.add(k);
+    }
+  }
+});

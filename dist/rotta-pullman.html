@@ -1012,6 +1012,26 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 .pk-icon small { font-size: 8.5px; letter-spacing: .06em; margin-top: -10px; }
 .pk-group { font: 600 12px/1.2 var(--font-body); color: var(--muted); letter-spacing: .06em; text-transform: uppercase; margin-top: 4px; }
 
+.permits { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.pm { border: 1px solid var(--line); border-radius: var(--r); padding: 12px; display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
+.pm p { margin: 0; }
+.pm-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.pm-badge { min-width: 28px; height: 28px; padding: 0 8px; border-radius: 14px; background: var(--fg); color: var(--surface); display: grid; place-items: center; font: 700 14px/1 var(--font-display); letter-spacing: .04em; }
+.pm-name { flex: 1; min-width: 130px; display: flex; flex-direction: column; }
+.pm-name b { font-size: 16px; }
+.pm-name span { color: var(--muted); font-size: 12.5px; }
+.pm-title { font-weight: 700; }
+.pm-permesso .pm-sev { background: var(--amber-soft); color: var(--amber); }
+.pm-limitato .pm-sev { background: var(--red-soft); color: var(--red); }
+.pm-verifica .pm-sev, .pm-ignoto .pm-sev, .pm-estero .pm-sev { background: var(--surface-2); color: var(--muted); }
+.pm-how summary { cursor: pointer; font-weight: 700; color: var(--accent); }
+.pm-steps { margin: 8px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.pm-links { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; font-weight: 600; }
+.pm-links a.pm-main { display: inline-flex; align-items: center; min-height: 36px; padding: 6px 12px; border-radius: 8px; background: var(--accent); color: var(--accent-ink); text-decoration: none; }
+.pm-source { color: var(--muted); font-size: 12.5px; }
+.tl-body .tl-permit { display: block; margin-top: 2px; color: var(--amber); font-weight: 600; font-size: 13px; }
+.tl-body .tl-permit.limitato { color: var(--red); }
+.chip-permit { appearance: none; cursor: pointer; background: var(--amber-soft); color: var(--amber); border-color: transparent; font-family: inherit; }
 .steps-wrap summary { cursor: pointer; font: 600 19px/1.15 var(--font-display); }
 .steps { list-style: none; margin: 0; padding: 0; }
 .step { display: grid; grid-template-columns: 28px 1fr auto; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); align-items: center; cursor: pointer; }
@@ -1101,7 +1121,8 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
   .print-head { display: block; margin-bottom: 10mm; }
   .print-head h1 { font: 700 24pt/1.1 var(--font-display); margin: 0 0 4px; }
   .print-head p { margin: 0; }
-  .res-sec, .hz, .pk, .tl { break-inside: avoid; }
+  .res-sec, .hz, .pk, .tl, .pm { break-inside: avoid; }
+  .pm-how > summary { list-style: none; }
   .steps-wrap > summary { list-style: none; }
 }
 
@@ -1274,6 +1295,11 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
             <button type="button" class="btn-secondary" id="btn-print">Foglio di viaggio</button>
           </div>
 
+          <section class="res-sec" id="permits-sec">
+            <h2>Permessi e ZTL</h2>
+            <ul class="permits" id="permits"></ul>
+          </section>
+
           <section class="res-sec">
             <h2>Programma</h2>
             <ol class="timeline" id="timeline"></ol>
@@ -1295,12 +1321,11 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
             <ol class="steps" id="steps"></ol>
           </details>
 
-          <p class="note"><b>ZTL e permessi.</b> Molte città d'arte chiedono un permesso o una prenotazione per i bus turistici e indicano aree di carico e scarico dedicate. Controlla sempre il sito del comune di destinazione.</p>
         </div>
       </section>
 
       <footer class="panel-foot">
-        <p>Dati © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">contributori OpenStreetMap</a>. Calcolo: <a href="https://valhalla1.openstreetmap.de" target="_blank" rel="noopener">Valhalla FOSSGIS</a> o <a href="https://openrouteservice.org" target="_blank" rel="noopener">openrouteservice</a>; ricerca: Photon; controlli: Overpass API.</p>
+        <p>Dati © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">contributori OpenStreetMap</a>. Calcolo: <a href="https://valhalla1.openstreetmap.de" target="_blank" rel="noopener">Valhalla FOSSGIS</a> o <a href="https://openrouteservice.org" target="_blank" rel="noopener">openrouteservice</a>; ricerca: Photon e Nominatim; controlli: Overpass API. Regole per i bus nei comuni raccolte dai siti ufficiali.</p>
         <p>Strumento di supporto alla pianificazione: le mappe possono essere incomplete. Segui sempre la segnaletica stradale.</p>
       </footer>
     </div>
@@ -2121,13 +2146,55 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
     }
   }
 
+  /* ------------------------------------------------------------------ */
+  /* Permessi per i bus nei comuni                                       */
+  /* ------------------------------------------------------------------ */
+  function normName(s) {
+    return String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[’'`]/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim();
+  }
+
+  /* place: {nome, prov, paese} -> regola del comune, oppure null */
+  function matchPermit(place, regole) {
+    if (!place || !place.nome) return null;
+    if (place.paese && place.paese !== 'IT') return null;
+    const n = normName(place.nome);
+    for (const r of regole || []) {
+      for (const c of r.comuni) {
+        if (normName(c.nome) !== n) continue;
+        if (place.prov && c.prov && place.prov !== c.prov) continue;
+        return r;
+      }
+    }
+    return null;
+  }
+
+  /*
+   * Raggruppa le tappe per comune. stops: [{label}], places: [{nome, prov, paese} | null]
+   * Restituisce [{key, place, rule, stops: [indici]}], destinazione per prima, poi le tappe in ordine.
+   */
+  function groupPermits(places, regole) {
+    const n = places.length;
+    const order = n ? [n - 1].concat(Array.from({ length: n - 1 }, (_, i) => i)) : [];
+    const out = [];
+    for (const i of order) {
+      const pl = places[i];
+      const key = pl && pl.nome ? (normName(pl.nome) + '|' + (pl.prov || '')) : 'ignoto-' + i;
+      let g = out.find((x) => x.key === key);
+      if (!g) { g = { key, place: pl, rule: matchPermit(pl, regole), stops: [] }; out.push(g); }
+      g.stops.push(i);
+    }
+    for (const g of out) g.stops.sort((a, b) => a - b);
+    return out;
+  }
+
   return {
     PRESETS, LIMITS, RULES, sanitizeVehicle,
     haversine, bearing, decodePolyline, encodePolyline, simplify, RouteIndex,
     buildCumTime, splitByDistance, normalizeValhalla, normalizeOrs, finishRoute, timeAtAlong, alongAtTime,
     parseLength, parseWeight, evaluateTags, hasRestrictionTags, wayRelation, analyzeElements,
     planTrip, fmtDur, fmtDist, fmtClock, fmtNum, stopLetter, parseCoords,
-    buildGpx, encodeShare, decodeShare,
+    buildGpx, encodeShare, decodeShare, normName, matchPermit, groupPermits,
   };
 });
 
@@ -2428,7 +2495,334 @@ out body center;`;
     return data.elements;
   }
 
-  root.RPServices = { URLS, ServiceError, geocode, geocodeFallback, reverse, routeValhalla, routeOrs, corridor, corridorQuery, parkings, valhallaBody };
+  /* ------------------------------ Comune di una tappa ------------------------------ */
+  /*
+   * Nominatim al livello del comune restituisce nome e sigla della provincia (IT-FI → FI).
+   * Se non risponde si usa Photon, che dà solo il nome.
+   */
+  async function comuneAt(lat, lon, signal) {
+    try {
+      const u = new URL(URLS.nominatim + '/reverse');
+      u.searchParams.set('format', 'jsonv2');
+      u.searchParams.set('lat', lat.toFixed(6));
+      u.searchParams.set('lon', lon.toFixed(6));
+      u.searchParams.set('zoom', '10');
+      u.searchParams.set('addressdetails', '1');
+      u.searchParams.set('accept-language', 'it');
+      const r = await request(u.toString(), { signal }, 12000);
+      const a = r.ok && r.data && r.data.address;
+      if (a) {
+        const nome = a.city || a.town || a.village || a.municipality || a.hamlet || null;
+        const iso = String(a['ISO3166-2-lvl6'] || '');
+        const m = iso.match(/^IT-([A-Z]{2})$/);
+        if (nome) return { nome, prov: m ? m[1] : null, paese: String(a.country_code || '').toUpperCase() || null, fonte: 'nominatim' };
+      }
+    } catch (e) {
+      if (e.code === 'aborted') throw e;
+    }
+    const u2 = new URL(URLS.photon + '/reverse');
+    u2.searchParams.set('lat', lat.toFixed(6));
+    u2.searchParams.set('lon', lon.toFixed(6));
+    u2.searchParams.set('limit', '1');
+    const r2 = await request(u2.toString(), { signal }, 10000);
+    const f = r2.ok && r2.data && r2.data.features && r2.data.features[0];
+    const p = f && f.properties;
+    if (!p) throw new ServiceError('Non riesco a riconoscere il comune della tappa.', 'comune');
+    const isPlace = p.osm_key === 'place' && /^(city|town|village)$/.test(p.osm_value || '');
+    const nome = p.city || (isPlace ? p.name : null);
+    if (!nome) throw new ServiceError('Non riesco a riconoscere il comune della tappa.', 'comune');
+    return { nome, prov: null, paese: p.countrycode ? String(p.countrycode).toUpperCase() : null, fonte: 'photon' };
+  }
+
+  root.RPServices = { URLS, ServiceError, geocode, geocodeFallback, reverse, routeValhalla, routeOrs, corridor, corridorQuery, parkings, valhallaBody, comuneAt, sleep };
+})(typeof self !== 'undefined' ? self : this);
+
+</script>
+<script>
+/*
+ * Rotta Pullman — regole di accesso per i bus turistici, comune per comune.
+ *
+ * Fonti: siti ufficiali dei comuni e degli enti che gestiscono i permessi, consultati il
+ * 23 ottobre 2026. Regole e tariffe cambiano spesso: ogni scheda rimanda alla pagina
+ * ufficiale e l'app invita sempre a controllarla prima di partire.
+ *
+ * Per aggiungere o correggere un comune basta modificare questo file:
+ *  - comuni:  nome del comune come su OpenStreetMap + sigla della provincia
+ *  - stato:   'permesso' (serve un permesso o un ticket), 'limitato' (accesso vietato o
+ *             ristretto, con eccezioni), 'verifica' (regole da controllare caso per caso)
+ *  - passi:   cosa fare, in ordine
+ *  - link:    pagine ufficiali (la prima è la principale)
+ *  - affidabilita: 'confermato' se le fonti ufficiali concordano, 'parziale' se mancano dettagli
+ */
+(function (root) {
+  'use strict';
+  root.RPPermessi = {
+    verificato: '2026-10-23',
+    elencoNazionale: {
+      testo: 'Elenco ANAV dei ticket bus nelle città italiane (febbraio 2025)',
+      url: 'https://www.anav.it/wp-content/uploads/2023/04/TICKET.BUS_.NELLE_.PRINCIPALI.CITTA_.Elenco_feb.2025.pdf',
+    },
+    regole: [
+      {
+        id: 'roma',
+        comuni: [{ nome: 'Roma', prov: 'RM' }],
+        stato: 'permesso',
+        titolo: 'Permesso ZTL Bus obbligatorio',
+        sintesi: 'Dentro il Grande Raccordo Anulare i bus turistici circolano solo con un permesso. Il permesso A vale per la ZTL Bus A, la fascia tra il GRA e la zona semicentrale. Il permesso B vale per le ZTL Bus A e B, la zona semicentrale che comprende l\'area vaticana. Il centro storico è vietato ai bus turistici, salvo casi particolari.',
+        passi: [
+          'Dal 1° gennaio 2026 i permessi si acquistano solo online sul sito di Roma Servizi per la Mobilità: il check point non li vende più.',
+          'Accedi con lo SPID del legale rappresentante dell\'azienda, o di una persona da lui delegata.',
+          'Scegli il permesso (A o B, giornaliero o carnet di ingressi) indicando targa, classe Euro, lunghezza del mezzo e giorno di ingresso.',
+          'Paga con PagoPA (carta di credito): il bonifico non è più accettato. Muoviti con qualche giorno di anticipo, per alcune tipologie la richiesta va fatta 5 giorni prima.',
+          'Stampa il permesso su un foglio A4 ed esponilo sul parabrezza.',
+        ],
+        costi: 'Indicativi, giornaliero online per bus oltre 8 m: permesso A circa 30 €, permesso B circa 451 €. Gli importi sono cambiati più volte dopo il Giubileo: controlla la tabella ufficiale.',
+        link: [
+          { testo: 'Bus turistici, Roma Servizi per la Mobilità', url: 'https://romamobilita.it/servizi-al-pubblico/bus-turistici/' },
+          { testo: 'Acquisto dei permessi e tariffe', url: 'https://romamobilita.it/servizi-al-pubblico/tariffe-bus-turistici/' },
+        ],
+        affidabilita: 'confermato',
+      },
+      {
+        id: 'firenze',
+        comuni: [{ nome: 'Firenze', prov: 'FI' }],
+        stato: 'permesso',
+        titolo: 'Contrassegno ZTL Bus obbligatorio',
+        sintesi: 'I bus turistici entrano nella ZTL Bus di Firenze solo con un contrassegno a pagamento, acquistabile esclusivamente online. Si circola sugli itinerari stabiliti e si sosta solo nelle aree autorizzate.',
+        passi: [
+          'Registra l\'azienda sul portale di Servizi alla Strada (SAS) e censisci il bus con la carta di circolazione: targa, proprietà, lunghezza e classe del motore.',
+          'Carica i documenti almeno 3 giorni prima del viaggio: la registrazione deve essere convalidata dall\'ufficio.',
+          'Acquista il contrassegno online. La tariffa dipende da lunghezza, classe ambientale e durata della permanenza.',
+          'Esponi il contrassegno sul parabrezza. I check point sono chiusi: senza contrassegno comprato online non si entra.',
+        ],
+        discesa: 'Salita, discesa e sosta sono ammesse solo nelle aree indicate da SAS (pagina "Parcheggi, salite e discese").',
+        contatti: 'Ufficio ZTL Bus di SAS: ztlbus@serviziallastrada.it',
+        link: [
+          { testo: 'Permessi bus turistici, Comune di Firenze', url: 'https://servizi.comune.fi.it/servizi/scheda-servizio/permessi-bus-turistici' },
+          { testo: 'Contrassegni online ZTL (SAS)', url: 'https://www.serviziallastrada.it/contrassegni-online-ztl' },
+          { testo: 'Parcheggi, salite e discese', url: 'https://www.serviziallastrada.it/servizi-al-turista/autorizzazioni-circolazione-e-sosta-autobus/parcheggi-salitediscese' },
+        ],
+        affidabilita: 'confermato',
+      },
+      {
+        id: 'venezia',
+        comuni: [{ nome: 'Venezia', prov: 'VE' }],
+        stato: 'permesso',
+        titolo: 'Pass ZTL Bus obbligatorio',
+        sintesi: 'Per entrare nella ZTL Bus di Venezia serve un pass a pagamento. Il prezzo dipende dalla destinazione finale (centro storico e Tronchetto, oppure terraferma e Lido) e dalla classe Euro del mezzo. Chi circola o sosta fuori dalla destinazione scelta paga una multa più la differenza di prezzo.',
+        passi: [
+          'Acquista il pass online sul portale ZTL Bus di AVM, con carta o conto prepagato. In alternativa si compra ai check-in all\'ingresso della città.',
+          'Scegli la destinazione giusta: Venezia e Tronchetto, oppure terraferma e Lido.',
+          'Se il gruppo dorme in un hotel del Comune di Venezia, chiedi il "pass alberghi" a tariffa ridotta presentando la conferma della prenotazione.',
+        ],
+        discesa: 'Per il centro storico i bus arrivano a Tronchetto o a Piazzale Roma. Secondo AVM, dal 1° giugno al 31 ottobre 2026 all\'Isola Nova del Tronchetto è ammessa la sosta temporanea fino a 2 ore (prima ora gratuita, poi 15 €).',
+        costi: 'Fissati dalla delibera di Giunta n. 8 del 16 gennaio 2026. Le pagine AVM riportano importi diversi tra loro: controlla il prezzo per la tua categoria prima di pagare.',
+        nota: 'Nei giorni previsti dal Comune, i passeggeri che visitano il centro storico pagano anche il contributo di accesso (cda.ve.it).',
+        link: [
+          { testo: 'ZTL Bus, AVM Venezia', url: 'https://avm.avmspa.it/it/content/ztl-bus-0' },
+          { testo: 'Tariffe ZTL Bus', url: 'https://avm.avmspa.it/it/content/tariffe-ztl-bus-0' },
+          { testo: 'Acquista online', url: 'https://tripplanner.veneziaunica.it/it/content/ztl-bus-acquista-online' },
+        ],
+        affidabilita: 'confermato',
+      },
+      {
+        id: 'milano',
+        comuni: [{ nome: 'Milano', prov: 'MI' }],
+        stato: 'permesso',
+        titolo: 'Ticket Area C per bus turistici',
+        sintesi: 'Per entrare in Area C, la Cerchia dei Bastioni, negli orari di attivazione, i bus turistici pagano un ticket in base alla lunghezza. Il ticket comprende 5 ore di sosta gratuita nelle aree riservate ai bus.',
+        passi: [
+          'Acquista e attiva il ticket online su My Area C entro la mezzanotte del giorno dopo l\'ingresso, oppure al parcometro il giorno stesso.',
+          'Controlla anche i limiti di Area B, che vale su quasi tutta la città, per la classe Euro del mezzo.',
+        ],
+        costi: 'Fino a 8 m: 60 €. Da 8 a 10,5 m: 97,50 €. Oltre 10,5 m: 150 € (tariffe in vigore dal 30 ottobre 2023). Gite scolastiche di primaria e secondaria di primo grado: 7,50 €.',
+        link: [
+          { testo: 'Bus turistici: regole, sosta, discesa (YesMilano)', url: 'https://www.yesmilano.it/en/tourist-buses' },
+          { testo: 'Area C: acquista il ticket', url: 'https://www.comune.milano.it/en/servizi/mobilita/area-c-acquista-il-ticket' },
+        ],
+        affidabilita: 'confermato',
+      },
+      {
+        id: 'napoli',
+        comuni: [{ nome: 'Napoli', prov: 'NA' }],
+        stato: 'permesso',
+        titolo: 'Ticket ZTL Bus turistici',
+        sintesi: 'Nel centro storico, a Posillipo e nell\'area Toledo, Decumani e Carmine i bus turistici con più di 8 posti oltre al conducente devono acquistare un ticket. Il prezzo dipende da dimensioni, classe Euro e fascia oraria.',
+        passi: [
+          'Registra l\'azienda sulla piattaforma smartmobility di ANM, con i dati aziendali e la partita IVA.',
+          'Censisci ogni bus caricando la carta di circolazione e attendi la convalida: conviene farlo almeno 72 ore prima.',
+          'Acquista il ticket indicando targa, giorno e fascia oraria (ci sono anche carnet e abbonamenti) e paga su PartenoPay.',
+          'Esponi il contrassegno sul parabrezza. Chi non lo acquista in anticipo paga 20 € in più.',
+        ],
+        discesa: 'La sosta nelle aree dedicate ai bus si paga con l\'app ANM Tap&Park.',
+        link: [
+          { testo: 'ZTL Bus turistici, Comune di Napoli', url: 'https://www.comune.napoli.it/articolo_tematico/trasporti-mobilita/bus-turistici/ztl-bus-turistici/' },
+          { testo: 'Registrazione su smartmobility ANM', url: 'https://smartmobility.anm.it/ar/registrazione.php' },
+        ],
+        affidabilita: 'confermato',
+      },
+      {
+        id: 'verona',
+        comuni: [{ nome: 'Verona', prov: 'VR' }],
+        stato: 'permesso',
+        titolo: 'Pass ZTL Bus obbligatorio',
+        sintesi: 'Per circolare nella ZTL Bus di Verona, più ampia della ZTL del centro storico, serve il Pass ZTL Bus, valido fino a mezzanotte del giorno di ingresso. Senza pass si paga la tariffa giornaliera ordinaria di 300 € oltre alla sanzione.',
+        passi: [
+          'Acquista il pass sul portale online di AMT3. Le tariffe ridotte e quelle online vanno acquistate entro le 23:59 del giorno prima.',
+          'In alternativa paga ai parcometri all\'ingresso dell\'area urbana, a tariffa intera.',
+          'Esponi il pass stampato, o la ricevuta, sul cruscotto in modo ben visibile.',
+        ],
+        discesa: 'Nella ZTL Bus la sosta è vietata, tranne al Bus Terminal vicino al parcheggio Centro e al parcheggio C dello Stadio.',
+        costi: 'Alta stagione (aprile–ottobre e dicembre) 150 €, 105 € online. Bassa stagione 100 €, 70 € online. Gruppi in hotel della provincia, con voucher: 65 €.',
+        link: [
+          { testo: 'ZTL Bus turistici, AMT3 Verona', url: 'https://www.amt3.it/ztl-verona/ztl-bus-turistici/' },
+          { testo: 'Tariffe e riduzioni', url: 'https://www.amt3.it/ztl-verona/tariffe-pass-ztl-bus/' },
+          { testo: 'Parcheggi per bus turistici', url: 'https://www.amt3.it/parcheggi-verona/parcheggi-bus-turistici/' },
+        ],
+        affidabilita: 'confermato',
+      },
+      {
+        id: 'siena',
+        comuni: [{ nome: 'Siena', prov: 'SI' }],
+        stato: 'permesso',
+        titolo: 'Prenotazione e tassa di attracco',
+        sintesi: 'Siena ha una ZTL per i bus turistici: si paga e si prenota il punto di salita e discesa ("attracco"), per esempio Porta San Marco o Piazza Amendola. Il check point è al parcheggio Il Fagiolone.',
+        passi: [
+          'Registrati sul portale del Comune per le prenotazioni online dei permessi bus.',
+          'Prenota attracco e orario: con la prenotazione si va direttamente all\'attracco nell\'orario scelto.',
+          'Senza prenotazione, o in ritardo, si passa dal check point del Fagiolone e si attende l\'autorizzazione.',
+        ],
+        nota: 'Durante il Palio e i grandi eventi alcuni attracchi chiudono o hanno fasce orarie ridotte: controlla il bollettino della viabilità del Comune.',
+        link: [
+          { testo: 'Registrazione per le prenotazioni dei permessi bus', url: 'https://sismic.comune.siena.it/bus/registration' },
+          { testo: 'Notizie e bollettini della viabilità, Comune di Siena', url: 'https://www.comune.siena.it/novita' },
+        ],
+        affidabilita: 'parziale',
+      },
+      {
+        id: 'pisa',
+        comuni: [{ nome: 'Pisa', prov: 'PI' }],
+        stato: 'permesso',
+        titolo: 'Permesso bus turistici (Pisamo)',
+        sintesi: 'I bus turistici fermano e sostano al parcheggio di via Pietrasantina, con un permesso giornaliero a pagamento. Per entrare nel centro (ZTL) e raggiungere l\'hotel serve un permesso diverso, con autorizzazione.',
+        passi: [
+          'Acquista online il permesso giornaliero TS sul portale bus di Pisamo, anche senza registrazione.',
+          'Se il gruppo deve raggiungere un hotel nella ZTL, chiedi il permesso TTS: l\'autorizzazione va chiesta almeno 3 giorni lavorativi prima.',
+          'Gli sconti, per esempio il 50% per chi dorme in hotel convenzionati, si chiedono online con lo stesso anticipo.',
+          'Al check point di via Pietrasantina (8:30–19:30) si paga solo con carta.',
+        ],
+        costi: 'In base alla lunghezza del mezzo: controlla la tabella aggiornata di Pisamo.',
+        link: [
+          { testo: 'Bus turistici, informazioni Pisamo', url: 'https://bus.pisamo.it/en/information/' },
+          { testo: 'Tariffe', url: 'https://bus.pisamo.it/en/rates/' },
+        ],
+        affidabilita: 'confermato',
+      },
+      {
+        id: 'bologna',
+        comuni: [{ nome: 'Bologna', prov: 'BO' }],
+        stato: 'limitato',
+        titolo: 'Centro storico vietato ai bus turistici',
+        sintesi: 'Dentro i viali di circonvallazione i bus turistici non possono circolare dalle 7 alle 20, tutti i giorni, festivi compresi. Fanno eccezione quelli diretti agli alberghi.',
+        passi: [
+          'Per far scendere il gruppo senza entrare usa la fermata di Porta San Mamolo (al massimo 20 minuti) oppure l\'Autostazione di piazza XX Settembre, dove si può anche parcheggiare a pagamento.',
+          'Per la fermata di piazza Malpighi, dentro la ZTL, serve un ticket di accesso giornaliero comprato online in anticipo (portale TPER). Va seguito il percorso fissato: Porta Sant\'Isaia, via Sant\'Isaia, piazza Malpighi, uscita da via Marconi.',
+          'La fermata in piazza Nettuno non è mai consentita.',
+        ],
+        costi: 'Il ticket per piazza Malpighi costava 100 € al giorno nel 2018. Un\'ordinanza del 2025 lo conferma, ma l\'importo attuale va verificato.',
+        contatti: 'Comune di Bologna, informazioni bus turistici: 051 219 3042',
+        link: [
+          { testo: 'Bus turistici, Comune di Bologna', url: 'https://www.comune.bologna.it/servizi-informazioni/bus-turistici' },
+          { testo: 'Accesso bus turistici al centro storico (Bologna Welcome)', url: 'https://www.bolognawelcome.com/it/altro/altro/accesso-bus-turistici-al-centro-storico' },
+        ],
+        affidabilita: 'parziale',
+      },
+      {
+        id: 'torino',
+        comuni: [{ nome: 'Torino', prov: 'TO' }],
+        stato: 'permesso',
+        titolo: 'Autorizzazione GTT per entrare in centro',
+        sintesi: 'I bus turistici possono entrare nella ZTL centrale solo con un\'autorizzazione preventiva, la deroga per transito occasionale, rilasciata da GTT.',
+        passi: [
+          'Chiedi a GTT la deroga per transito occasionale prima del viaggio.',
+          'Per salita e discesa usa le fermate dedicate: piazza Castello davanti al Teatro Regio, piazza Vittorio Veneto, corso Vittorio Emanuele II a Porta Nuova, viale 1° Maggio.',
+        ],
+        nota: 'Le pagine ufficiali non indicano tempi e costi della deroga: chiedili a GTT.',
+        link: [
+          { testo: 'Bus turistici, Muoversi a Torino', url: 'https://www.muoversiatorino.it/en/tourist-buses/' },
+          { testo: 'In bus turistico, Turismo Torino', url: 'https://turismotorino.org/en/visit/plan-your-trip/getting-around/by-tourist-buses' },
+        ],
+        affidabilita: 'parziale',
+      },
+      {
+        id: 'lucca',
+        comuni: [{ nome: 'Lucca', prov: 'LU' }],
+        stato: 'permesso',
+        titolo: 'Ticket check point bus turistici',
+        sintesi: 'I bus turistici diretti a Lucca pagano un ticket di accesso. Dall\'11 novembre 2024 si acquista solo online, prima di entrare nella ZTL: al check point non si paga più.',
+        passi: [
+          'Acquista il ticket sul portale di LuccaPlus, sezione bus turistici.',
+          'Per la tariffa ridotta invia la richiesta online almeno 3 giorni prima dell\'arrivo.',
+          'Il ticket vale dall\'arrivo fino alle 10 del giorno dopo.',
+        ],
+        costi: 'Tariffe 2025: giornaliero 180 €, ridotto 126 €.',
+        contatti: 'Ufficio check point bus, piazzale G. Palatucci: checkpointbus@luccaplus.it, 0583 492255 (sportello aperto in alta stagione, 9:30–16:30).',
+        link: [
+          { testo: 'Bus turistici, LuccaPlus', url: 'https://www.luccaplus.it/en/tourist-buses/' },
+          { testo: 'Check point bus turistici, Turismo Lucca', url: 'https://www.turismo.lucca.it/en/infopoint/bus-turistici-check-point' },
+        ],
+        affidabilita: 'confermato',
+      },
+      {
+        id: 'perugia',
+        comuni: [{ nome: 'Perugia', prov: 'PG' }],
+        stato: 'limitato',
+        titolo: 'Area urbana vietata ai bus oltre 9 m',
+        sintesi: 'Un\'ordinanza vieta l\'area urbana di Perugia ai bus più lunghi di 9 m. Per raggiungere il terminal di piazza Partigiani e far salire o scendere il gruppo serve un permesso giornaliero di transito.',
+        passi: [
+          'Possono chiederlo guide abilitate in Umbria, hotel e ristoranti dell\'area urbana, tour operator e vettori.',
+          'Fai la richiesta online sul portale del Comune almeno 5 giorni lavorativi prima, con documento d\'identità, carta di circolazione e targa.',
+          'Accettata la richiesta, paga l\'avviso PagoPA che arriva via email.',
+          'Stampa il permesso ed esponilo sul cruscotto.',
+        ],
+        costi: '10 € al giorno dal 1° settembre 2025. Accesso e sosta al terminal di piazza Partigiani si pagano a parte a Busitalia.',
+        link: [
+          { testo: 'Permessi per bus turistici, Comune di Perugia', url: 'https://www.comune.perugia.it/servizio/permessi-bus-turistici/' },
+          { testo: 'Vademecum bus turistici (PDF)', url: 'https://www.comune.perugia.it/wp-content/uploads/2025/10/VademecumBusTuristici.pdf' },
+        ],
+        affidabilita: 'confermato',
+      },
+      {
+        id: 'bergamo',
+        comuni: [{ nome: 'Bergamo', prov: 'BG' }],
+        stato: 'limitato',
+        titolo: 'Città Alta chiusa ai mezzi lunghi',
+        sintesi: 'Secondo ATB, Città Alta è vietata ai veicoli più lunghi di 10,5 m e più alti di 3 m. Per i gruppi in pullman c\'è il servizio Bergamo Easy Access.',
+        passi: [
+          'Parcheggia nell\'area per pullman di via Rovelli (Bergamo Easy Access, gestita da ATB), vicino alla funicolare.',
+          'Sali a Città Alta con la funicolare o con il trasferimento in bus di ATB.',
+          'Per una discesa veloce dei passeggeri c\'è la piazzola dei bus urbani in viale Vittorio Emanuele II 34.',
+        ],
+        costi: 'Sosta in via Rovelli: circa 40 € fino a 4 ore, 70 € oltre.',
+        link: [{ testo: 'Servizi turistici, ATB Bergamo', url: 'https://atb.bergamo.it/en/other-services/tourist-services' }],
+        affidabilita: 'parziale',
+      },
+      {
+        id: 'costiera-amalfitana',
+        comuni: ['Positano', 'Praiano', 'Furore', 'Conca dei Marini', 'Amalfi', 'Atrani', 'Ravello', 'Scala', 'Minori', 'Maiori', 'Tramonti', 'Cetara', 'Vietri sul Mare']
+          .map((nome) => ({ nome, prov: 'SA' })),
+        stato: 'verifica',
+        titolo: 'Strada Amalfitana: ordinanze stagionali',
+        sintesi: 'La statale 163 Amalfitana è larga circa 7 m, tortuosa e senza alternative. Dal 1° aprile al 30 settembre valgono ordinanze ANAS sulla circolazione, tra cui le targhe alterne in alcuni giorni e fasce orarie. I comuni regolano a pagamento sosta e fermate dei bus.',
+        passi: [
+          'Prima di inserire la costiera nel viaggio, controlla le ordinanze ANAS in vigore sulla SS163 e le regole per i bus del comune di destinazione.',
+          'Chiedi al comune o all\'agenzia locale dove sono le aree di sosta per bus e se vanno prenotate.',
+        ],
+        link: [{ testo: 'Comune di Amalfi', url: 'https://www.comune.amalfi.sa.it/' }],
+        affidabilita: 'parziale',
+      },
+    ],
+  };
 })(typeof self !== 'undefined' ? self : this);
 
 </script>
@@ -2506,7 +2900,7 @@ out body center;`;
     departure: validDeparture(saved.departure),
     garage: Array.isArray(saved.garage) ? saved.garage : [],
     base: saved.base || (location.protocol === 'file:' ? 'esri' : 'stradale'),
-    route: null, plan: null, analysis: null, parkings: null, stale: false,
+    route: null, plan: null, analysis: null, parkings: null, permits: null, stale: false,
   };
 
   // link condiviso (#v=...)
@@ -3291,6 +3685,7 @@ out body center;`;
       state.route = r;
       state.analysis = { status: 'loading' };
       state.parkings = { status: 'loading' };
+      state.permits = { status: 'loading' };
       state.stale = false;
       $('#stale').hidden = true;
       drawRoute();
@@ -3301,6 +3696,7 @@ out body center;`;
       fitAll();
       runAnalysis(my, signal);
       runParkings(my, signal);
+      runPermits(my, signal);
     } catch (e) {
       if (my !== seq || e.code === 'aborted') return;
       showError(e.message || 'Errore inatteso durante il calcolo.');
@@ -3488,7 +3884,7 @@ out body center;`;
     $('#res-empty').hidden = has;
     $('#res').hidden = !has;
     if (!has) return;
-    renderSummary(); renderCheck(); renderTimeline(); renderHazards(); renderParkings(); renderSteps(); renderMini();
+    renderSummary(); renderCheck(); renderPermits(); renderTimeline(); renderHazards(); renderParkings(); renderSteps(); renderMini();
   }
 
   function renderSummary() {
@@ -3505,6 +3901,12 @@ out body center;`;
     const pauses = p.events.filter((e) => e.type === 'pausa');
     chips.append(h('span', { class: 'chip chip-accent' }, pauses.length ? `${pauses.length} ${pauses.length === 1 ? 'pausa' : 'pause'} autista` : 'Nessuna pausa obbligatoria'));
     chips.append(h('span', { class: 'chip' }, r.engine === 'ors' ? 'openrouteservice · bus' : 'Valhalla · mezzo pesante'));
+    const needed = permitGroups().filter((g) => g.rule && g.rule.stato !== 'verifica');
+    if (needed.length) {
+      const names = needed.map((g) => g.place.nome).join(', ');
+      chips.prepend(h('button', { type: 'button', class: 'chip chip-permit', title: 'Vai ai permessi', onclick: () => $('#permits-sec').scrollIntoView({ behavior: 'smooth', block: 'start' }) },
+        `Permesso bus: ${names}`));
+    }
   }
 
   function renderMini() {
@@ -3572,6 +3974,106 @@ out body center;`;
     box.append(body);
   }
 
+  /* ------------------------------------------------------------------ */
+  /* Permessi per i bus nei comuni delle tappe                           */
+  /* ------------------------------------------------------------------ */
+  const comuneCache = new Map();
+  const PERMIT_LABEL = { permesso: 'Serve un permesso', limitato: 'Accesso limitato', verifica: 'Da verificare' };
+
+  function permitGroups() {
+    return (state.permits && state.permits.groups) || [];
+  }
+
+  async function runPermits(my, signal) {
+    const r = state.route;
+    const places = [];
+    let lastCall = 0;
+    try {
+      for (const s of r.stops) {
+        const key = s.lat.toFixed(4) + ',' + s.lon.toFixed(4);
+        let pl = comuneCache.get(key);
+        if (!pl) {
+          const wait = 1100 - (Date.now() - lastCall); // Nominatim: al massimo una richiesta al secondo
+          if (lastCall && wait > 0) await API.sleep(wait, signal);
+          lastCall = Date.now();
+          try { pl = await API.comuneAt(s.lat, s.lon, signal); } catch (e) { if (e.code === 'aborted') throw e; pl = null; }
+          if (pl) comuneCache.set(key, pl);
+        }
+        if (my !== seq) return;
+        places.push(pl || null);
+      }
+    } catch (e) {
+      return; // calcolo annullato
+    }
+    if (my !== seq) return;
+    const regole = (window.RPPermessi && window.RPPermessi.regole) || [];
+    state.permits = places.some(Boolean) ? { status: 'done', groups: C.groupPermits(places, regole) } : { status: 'error' };
+    renderPermits();
+    if (state.plan) { renderSummary(); renderTimeline(); }
+  }
+
+  function fmtDateLong(iso) {
+    const [y, m, d] = String(iso || '').split('-').map(Number);
+    if (!y) return '';
+    return new Date(y, m - 1, d).toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' });
+  }
+
+  function renderPermits() {
+    const ul = $('#permits');
+    ul.replaceChildren();
+    const p = state.permits;
+    const r = state.route;
+    if (!r) return;
+    if (!p || p.status === 'loading') { ul.append(h('li', { class: 'none' }, 'Cerco il comune di ogni tappa e le regole per i bus…')); return; }
+    if (p.status === 'error') {
+      ul.append(h('li', { class: 'none' }, 'Non riesco a riconoscere i comuni delle tappe. ',
+        h('button', { type: 'button', class: 'btn-ghost', onclick: () => {
+          state.permits = { status: 'loading' }; renderPermits();
+          runPermits(seq, workCtrl ? workCtrl.signal : undefined);
+        } }, 'Riprova')));
+      return;
+    }
+    const P = window.RPPermessi || { regole: [] };
+    const last = r.stops.length - 1;
+    p.groups.forEach((g, k) => {
+      const rule = g.rule;
+      const abroad = !rule && g.place && g.place.paese && g.place.paese !== 'IT';
+      const kind = rule ? rule.stato : abroad ? 'estero' : 'ignoto';
+      const nome = (g.place && g.place.nome) || r.stops[g.stops[0]].label || 'Tappa';
+      const roles = g.stops.map((i) => (i === 0 ? 'partenza' : i === last ? 'destinazione' : 'tappa ' + C.stopLetter(i))).join(', ');
+      const li = h('li', { class: 'pm pm-' + kind });
+      li.append(h('div', { class: 'pm-head' },
+        h('span', { class: 'pm-badge', 'aria-hidden': 'true', text: g.stops.map((i) => C.stopLetter(i)).join(' ') }),
+        h('span', { class: 'pm-name' }, h('b', { text: nome }), h('span', { text: roles.charAt(0).toUpperCase() + roles.slice(1) })),
+        h('span', { class: 'sev pm-sev', text: rule ? PERMIT_LABEL[rule.stato] : abroad ? 'Fuori Italia' : 'Nessuna regola nota' })));
+      if (rule) {
+        li.append(h('p', { class: 'pm-title', text: rule.titolo }), h('p', { text: rule.sintesi }));
+        const how = h('details', { class: 'pm-how' },
+          h('summary', null, rule.stato === 'permesso' ? 'Come ottenerlo' : 'Cosa fare'),
+          h('ol', { class: 'pm-steps' }, rule.passi.map((t) => h('li', { text: t }))));
+        if (k === 0) how.open = true;
+        li.append(how);
+        if (rule.discesa) li.append(h('p', null, h('b', { text: 'Salita e discesa: ' }), rule.discesa));
+        if (rule.costi) li.append(h('p', null, h('b', { text: 'Costi indicativi: ' }), rule.costi));
+        if (rule.contatti) li.append(h('p', null, h('b', { text: 'Contatti: ' }), rule.contatti));
+        if (rule.nota) li.append(h('p', null, h('b', { text: 'Da sapere: ' }), rule.nota));
+        li.append(h('div', { class: 'pm-links' }, rule.link.map((l, j) => h('a', { href: l.url, target: '_blank', rel: 'noopener', class: j === 0 ? 'pm-main' : null }, l.testo))));
+        li.append(h('p', { class: 'pm-source', text: `Fonti ufficiali consultate il ${fmtDateLong(P.verificato)}${rule.affidabilita === 'parziale' ? ', alcuni dettagli non erano indicati' : ''}. Regole e tariffe cambiano: controlla la pagina ufficiale prima di partire.` }));
+      } else if (abroad) {
+        li.append(h('p', { text: 'Le regole per i bus all\'estero non sono nel nostro elenco: controlla il sito della città.' }));
+      } else {
+        li.append(h('p', { text: g.place && g.place.nome
+          ? `Nel nostro elenco non ci sono regole per i bus a ${nome}. Molti comuni italiani chiedono un ticket o una prenotazione ai bus turistici: verifica sul sito del comune prima di partire.`
+          : 'Non riesco a riconoscere il comune di questa tappa: verifica sul sito del comune prima di partire.' }));
+        const q = encodeURIComponent(`bus turistici permesso accesso ${g.place && g.place.nome ? g.place.nome : ''}`.trim());
+        li.append(h('div', { class: 'pm-links' },
+          h('a', { href: 'https://www.google.com/search?q=' + q, target: '_blank', rel: 'noopener' }, 'Cerca le regole del comune'),
+          P.elencoNazionale ? h('a', { href: P.elencoNazionale.url, target: '_blank', rel: 'noopener' }, P.elencoNazionale.testo) : null));
+      }
+      ul.append(li);
+    });
+  }
+
   function kmAt(T) { return C.alongAtTime(state.route, T) / 1000; }
 
   function renderTimeline() {
@@ -3606,7 +4108,10 @@ out body center;`;
         time.append(C.fmtClock(ev.arrive, ref));
         title = 'Arrivo'; sub = label; target = [stop.lat, stop.lon];
       }
-      const btn = h('button', { type: 'button', onclick: () => target && flyTo(target[0], target[1], 15) }, h('b', { text: title }), sub ? h('span', { text: sub }) : null);
+      const pg = ev.stop != null ? permitGroups().find((g) => g.stops.includes(ev.stop)) : null;
+      const pr = pg && pg.rule && pg.rule.stato !== 'verifica' ? pg.rule : null;
+      const permitNote = pr ? h('span', { class: 'tl-permit ' + pr.stato, text: pr.stato === 'limitato' ? `${pg.place.nome}: accesso limitato ai bus` : `${pg.place.nome}: serve un permesso per il bus` }) : null;
+      const btn = h('button', { type: 'button', onclick: () => target && flyTo(target[0], target[1], 15) }, h('b', { text: title }), sub ? h('span', { text: sub }) : null, permitNote);
       body.append(btn);
       ol.append(h('li', { class: 'tl tl-' + ev.type }, time, h('div', { class: 'tl-rail' }, h('span', { class: 'tl-dot' })), body));
       if (next) {
@@ -3772,6 +4277,7 @@ out body center;`;
       h('p', { text: vehicleLine(r.vehicle, r.margin) }),
       h('p', { text: `Partenza ${new Date(depMs()).toLocaleString('it-IT', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })} · ${C.fmtDist(r.distanceM)} · ${C.fmtDur(state.plan.driveS)} di guida` }));
     $('#steps-wrap').open = true;
+    document.querySelectorAll('.pm-how').forEach((d) => { d.open = true; });
     showTab('percorso');
     setTimeout(() => window.print(), 50);
   });

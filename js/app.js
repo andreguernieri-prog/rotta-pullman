@@ -71,7 +71,7 @@
     departure: validDeparture(saved.departure),
     garage: Array.isArray(saved.garage) ? saved.garage : [],
     base: saved.base || (location.protocol === 'file:' ? 'esri' : 'stradale'),
-    route: null, plan: null, analysis: null, parkings: null, stale: false,
+    route: null, plan: null, analysis: null, parkings: null, permits: null, stale: false,
   };
 
   // link condiviso (#v=...)
@@ -856,6 +856,7 @@
       state.route = r;
       state.analysis = { status: 'loading' };
       state.parkings = { status: 'loading' };
+      state.permits = { status: 'loading' };
       state.stale = false;
       $('#stale').hidden = true;
       drawRoute();
@@ -866,6 +867,7 @@
       fitAll();
       runAnalysis(my, signal);
       runParkings(my, signal);
+      runPermits(my, signal);
     } catch (e) {
       if (my !== seq || e.code === 'aborted') return;
       showError(e.message || 'Errore inatteso durante il calcolo.');
@@ -1053,7 +1055,7 @@
     $('#res-empty').hidden = has;
     $('#res').hidden = !has;
     if (!has) return;
-    renderSummary(); renderCheck(); renderTimeline(); renderHazards(); renderParkings(); renderSteps(); renderMini();
+    renderSummary(); renderCheck(); renderPermits(); renderTimeline(); renderHazards(); renderParkings(); renderSteps(); renderMini();
   }
 
   function renderSummary() {
@@ -1070,6 +1072,12 @@
     const pauses = p.events.filter((e) => e.type === 'pausa');
     chips.append(h('span', { class: 'chip chip-accent' }, pauses.length ? `${pauses.length} ${pauses.length === 1 ? 'pausa' : 'pause'} autista` : 'Nessuna pausa obbligatoria'));
     chips.append(h('span', { class: 'chip' }, r.engine === 'ors' ? 'openrouteservice · bus' : 'Valhalla · mezzo pesante'));
+    const needed = permitGroups().filter((g) => g.rule && g.rule.stato !== 'verifica');
+    if (needed.length) {
+      const names = needed.map((g) => g.place.nome).join(', ');
+      chips.prepend(h('button', { type: 'button', class: 'chip chip-permit', title: 'Vai ai permessi', onclick: () => $('#permits-sec').scrollIntoView({ behavior: 'smooth', block: 'start' }) },
+        `Permesso bus: ${names}`));
+    }
   }
 
   function renderMini() {
@@ -1137,6 +1145,106 @@
     box.append(body);
   }
 
+  /* ------------------------------------------------------------------ */
+  /* Permessi per i bus nei comuni delle tappe                           */
+  /* ------------------------------------------------------------------ */
+  const comuneCache = new Map();
+  const PERMIT_LABEL = { permesso: 'Serve un permesso', limitato: 'Accesso limitato', verifica: 'Da verificare' };
+
+  function permitGroups() {
+    return (state.permits && state.permits.groups) || [];
+  }
+
+  async function runPermits(my, signal) {
+    const r = state.route;
+    const places = [];
+    let lastCall = 0;
+    try {
+      for (const s of r.stops) {
+        const key = s.lat.toFixed(4) + ',' + s.lon.toFixed(4);
+        let pl = comuneCache.get(key);
+        if (!pl) {
+          const wait = 1100 - (Date.now() - lastCall); // Nominatim: al massimo una richiesta al secondo
+          if (lastCall && wait > 0) await API.sleep(wait, signal);
+          lastCall = Date.now();
+          try { pl = await API.comuneAt(s.lat, s.lon, signal); } catch (e) { if (e.code === 'aborted') throw e; pl = null; }
+          if (pl) comuneCache.set(key, pl);
+        }
+        if (my !== seq) return;
+        places.push(pl || null);
+      }
+    } catch (e) {
+      return; // calcolo annullato
+    }
+    if (my !== seq) return;
+    const regole = (window.RPPermessi && window.RPPermessi.regole) || [];
+    state.permits = places.some(Boolean) ? { status: 'done', groups: C.groupPermits(places, regole) } : { status: 'error' };
+    renderPermits();
+    if (state.plan) { renderSummary(); renderTimeline(); }
+  }
+
+  function fmtDateLong(iso) {
+    const [y, m, d] = String(iso || '').split('-').map(Number);
+    if (!y) return '';
+    return new Date(y, m - 1, d).toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' });
+  }
+
+  function renderPermits() {
+    const ul = $('#permits');
+    ul.replaceChildren();
+    const p = state.permits;
+    const r = state.route;
+    if (!r) return;
+    if (!p || p.status === 'loading') { ul.append(h('li', { class: 'none' }, 'Cerco il comune di ogni tappa e le regole per i bus…')); return; }
+    if (p.status === 'error') {
+      ul.append(h('li', { class: 'none' }, 'Non riesco a riconoscere i comuni delle tappe. ',
+        h('button', { type: 'button', class: 'btn-ghost', onclick: () => {
+          state.permits = { status: 'loading' }; renderPermits();
+          runPermits(seq, workCtrl ? workCtrl.signal : undefined);
+        } }, 'Riprova')));
+      return;
+    }
+    const P = window.RPPermessi || { regole: [] };
+    const last = r.stops.length - 1;
+    p.groups.forEach((g, k) => {
+      const rule = g.rule;
+      const abroad = !rule && g.place && g.place.paese && g.place.paese !== 'IT';
+      const kind = rule ? rule.stato : abroad ? 'estero' : 'ignoto';
+      const nome = (g.place && g.place.nome) || r.stops[g.stops[0]].label || 'Tappa';
+      const roles = g.stops.map((i) => (i === 0 ? 'partenza' : i === last ? 'destinazione' : 'tappa ' + C.stopLetter(i))).join(', ');
+      const li = h('li', { class: 'pm pm-' + kind });
+      li.append(h('div', { class: 'pm-head' },
+        h('span', { class: 'pm-badge', 'aria-hidden': 'true', text: g.stops.map((i) => C.stopLetter(i)).join(' ') }),
+        h('span', { class: 'pm-name' }, h('b', { text: nome }), h('span', { text: roles.charAt(0).toUpperCase() + roles.slice(1) })),
+        h('span', { class: 'sev pm-sev', text: rule ? PERMIT_LABEL[rule.stato] : abroad ? 'Fuori Italia' : 'Nessuna regola nota' })));
+      if (rule) {
+        li.append(h('p', { class: 'pm-title', text: rule.titolo }), h('p', { text: rule.sintesi }));
+        const how = h('details', { class: 'pm-how' },
+          h('summary', null, rule.stato === 'permesso' ? 'Come ottenerlo' : 'Cosa fare'),
+          h('ol', { class: 'pm-steps' }, rule.passi.map((t) => h('li', { text: t }))));
+        if (k === 0) how.open = true;
+        li.append(how);
+        if (rule.discesa) li.append(h('p', null, h('b', { text: 'Salita e discesa: ' }), rule.discesa));
+        if (rule.costi) li.append(h('p', null, h('b', { text: 'Costi indicativi: ' }), rule.costi));
+        if (rule.contatti) li.append(h('p', null, h('b', { text: 'Contatti: ' }), rule.contatti));
+        if (rule.nota) li.append(h('p', null, h('b', { text: 'Da sapere: ' }), rule.nota));
+        li.append(h('div', { class: 'pm-links' }, rule.link.map((l, j) => h('a', { href: l.url, target: '_blank', rel: 'noopener', class: j === 0 ? 'pm-main' : null }, l.testo))));
+        li.append(h('p', { class: 'pm-source', text: `Fonti ufficiali consultate il ${fmtDateLong(P.verificato)}${rule.affidabilita === 'parziale' ? ', alcuni dettagli non erano indicati' : ''}. Regole e tariffe cambiano: controlla la pagina ufficiale prima di partire.` }));
+      } else if (abroad) {
+        li.append(h('p', { text: 'Le regole per i bus all\'estero non sono nel nostro elenco: controlla il sito della città.' }));
+      } else {
+        li.append(h('p', { text: g.place && g.place.nome
+          ? `Nel nostro elenco non ci sono regole per i bus a ${nome}. Molti comuni italiani chiedono un ticket o una prenotazione ai bus turistici: verifica sul sito del comune prima di partire.`
+          : 'Non riesco a riconoscere il comune di questa tappa: verifica sul sito del comune prima di partire.' }));
+        const q = encodeURIComponent(`bus turistici permesso accesso ${g.place && g.place.nome ? g.place.nome : ''}`.trim());
+        li.append(h('div', { class: 'pm-links' },
+          h('a', { href: 'https://www.google.com/search?q=' + q, target: '_blank', rel: 'noopener' }, 'Cerca le regole del comune'),
+          P.elencoNazionale ? h('a', { href: P.elencoNazionale.url, target: '_blank', rel: 'noopener' }, P.elencoNazionale.testo) : null));
+      }
+      ul.append(li);
+    });
+  }
+
   function kmAt(T) { return C.alongAtTime(state.route, T) / 1000; }
 
   function renderTimeline() {
@@ -1171,7 +1279,10 @@
         time.append(C.fmtClock(ev.arrive, ref));
         title = 'Arrivo'; sub = label; target = [stop.lat, stop.lon];
       }
-      const btn = h('button', { type: 'button', onclick: () => target && flyTo(target[0], target[1], 15) }, h('b', { text: title }), sub ? h('span', { text: sub }) : null);
+      const pg = ev.stop != null ? permitGroups().find((g) => g.stops.includes(ev.stop)) : null;
+      const pr = pg && pg.rule && pg.rule.stato !== 'verifica' ? pg.rule : null;
+      const permitNote = pr ? h('span', { class: 'tl-permit ' + pr.stato, text: pr.stato === 'limitato' ? `${pg.place.nome}: accesso limitato ai bus` : `${pg.place.nome}: serve un permesso per il bus` }) : null;
+      const btn = h('button', { type: 'button', onclick: () => target && flyTo(target[0], target[1], 15) }, h('b', { text: title }), sub ? h('span', { text: sub }) : null, permitNote);
       body.append(btn);
       ol.append(h('li', { class: 'tl tl-' + ev.type }, time, h('div', { class: 'tl-rail' }, h('span', { class: 'tl-dot' })), body));
       if (next) {
@@ -1337,6 +1448,7 @@
       h('p', { text: vehicleLine(r.vehicle, r.margin) }),
       h('p', { text: `Partenza ${new Date(depMs()).toLocaleString('it-IT', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })} · ${C.fmtDist(r.distanceM)} · ${C.fmtDur(state.plan.driveS)} di guida` }));
     $('#steps-wrap').open = true;
+    document.querySelectorAll('.pm-how').forEach((d) => { d.open = true; });
     showTab('percorso');
     setTimeout(() => window.print(), 50);
   });

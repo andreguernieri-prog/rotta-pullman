@@ -293,5 +293,44 @@ out body center;`;
     return data.elements;
   }
 
-  root.RPServices = { URLS, ServiceError, geocode, geocodeFallback, reverse, routeValhalla, routeOrs, corridor, corridorQuery, parkings, valhallaBody };
+  /* ------------------------------ Comune di una tappa ------------------------------ */
+  /*
+   * Nominatim al livello del comune restituisce nome e sigla della provincia (IT-FI → FI).
+   * Se non risponde si usa Photon, che dà solo il nome.
+   */
+  async function comuneAt(lat, lon, signal) {
+    try {
+      const u = new URL(URLS.nominatim + '/reverse');
+      u.searchParams.set('format', 'jsonv2');
+      u.searchParams.set('lat', lat.toFixed(6));
+      u.searchParams.set('lon', lon.toFixed(6));
+      u.searchParams.set('zoom', '10');
+      u.searchParams.set('addressdetails', '1');
+      u.searchParams.set('accept-language', 'it');
+      const r = await request(u.toString(), { signal }, 12000);
+      const a = r.ok && r.data && r.data.address;
+      if (a) {
+        const nome = a.city || a.town || a.village || a.municipality || a.hamlet || null;
+        const iso = String(a['ISO3166-2-lvl6'] || '');
+        const m = iso.match(/^IT-([A-Z]{2})$/);
+        if (nome) return { nome, prov: m ? m[1] : null, paese: String(a.country_code || '').toUpperCase() || null, fonte: 'nominatim' };
+      }
+    } catch (e) {
+      if (e.code === 'aborted') throw e;
+    }
+    const u2 = new URL(URLS.photon + '/reverse');
+    u2.searchParams.set('lat', lat.toFixed(6));
+    u2.searchParams.set('lon', lon.toFixed(6));
+    u2.searchParams.set('limit', '1');
+    const r2 = await request(u2.toString(), { signal }, 10000);
+    const f = r2.ok && r2.data && r2.data.features && r2.data.features[0];
+    const p = f && f.properties;
+    if (!p) throw new ServiceError('Non riesco a riconoscere il comune della tappa.', 'comune');
+    const isPlace = p.osm_key === 'place' && /^(city|town|village)$/.test(p.osm_value || '');
+    const nome = p.city || (isPlace ? p.name : null);
+    if (!nome) throw new ServiceError('Non riesco a riconoscere il comune della tappa.', 'comune');
+    return { nome, prov: null, paese: p.countrycode ? String(p.countrycode).toUpperCase() : null, fonte: 'photon' };
+  }
+
+  root.RPServices = { URLS, ServiceError, geocode, geocodeFallback, reverse, routeValhalla, routeOrs, corridor, corridorQuery, parkings, valhallaBody, comuneAt, sleep };
 })(typeof self !== 'undefined' ? self : this);

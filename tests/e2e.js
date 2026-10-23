@@ -137,6 +137,20 @@ function mockPhoton(url) {
   return { features: [] };
 }
 
+// comune di un punto, come lo restituisce Nominatim al livello 10
+const COMUNI = [
+  { nome: 'Milano', prov: 'MI', lat: 45.47, lon: 9.19 },
+  { nome: 'Bologna', prov: 'BO', lat: 44.49, lon: 11.34 },
+  { nome: 'Firenze', prov: 'FI', lat: 43.77, lon: 11.25 },
+];
+function mockNominatimReverse(url) {
+  const u = new URL(url);
+  const lat = Number(u.searchParams.get('lat')), lon = Number(u.searchParams.get('lon'));
+  const c = COMUNI.find((x) => Math.abs(x.lat - lat) < 0.08 && Math.abs(x.lon - lon) < 0.08);
+  if (!c) return { address: { village: 'Borgo di prova', 'ISO3166-2-lvl6': 'IT-PR', country_code: 'it' } };
+  return { place_id: 1, name: c.nome, address: { city: c.nome, 'ISO3166-2-lvl6': 'IT-' + c.prov, country: 'Italia', country_code: 'it' } };
+}
+
 let tilePng = null;
 async function setupRoutes(context) {
   await context.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
@@ -144,6 +158,7 @@ async function setupRoutes(context) {
     const json = (o, status) => route.fulfill({ status: status || 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(o) });
     if (url.includes('valhalla1.openstreetmap.de/route')) { const r = mockValhalla(url); return json(r.body, r.status); }
     if (url.includes('photon.komoot.io')) return json(mockPhoton(url));
+    if (url.includes('nominatim.openstreetmap.org/reverse')) return json(mockNominatimReverse(url));
     if (url.includes('nominatim.openstreetmap.org')) return json([]);
     if (url.includes('/api/interpreter')) {
       const data = new URLSearchParams(route.request().postData() || '').get('data') || '';
@@ -218,6 +233,22 @@ async function setupRoutes(context) {
     await p.screenshot({ path: path.join(OUT, '1-telefono-percorso.png') });
   });
 
+  await step('permessi: destinazione e partenza riconosciute con le istruzioni', async () => {
+    await p.waitForFunction(() => document.querySelectorAll('#permits .pm').length === 2, null, { timeout: 15000 });
+    const first = p.locator('#permits .pm').first();
+    assert.match(await first.textContent(), /Firenze/);
+    assert.match(await first.textContent(), /Serve un permesso/);
+    assert.match(await first.textContent(), /Contrassegno ZTL Bus obbligatorio/);
+    assert.equal(await first.locator('details.pm-how').evaluate((d) => d.open), true);
+    assert.match(await first.locator('a.pm-main').getAttribute('href'), /^https:\/\/servizi\.comune\.fi\.it\//);
+    assert.match(await p.locator('#permits .pm').nth(1).textContent(), /Milano.*Ticket Area C/s);
+    assert.match(await p.textContent('#sum-chips'), /Permesso bus: Firenze, Milano/);
+    assert.match(await p.textContent('#timeline'), /Firenze: serve un permesso per il bus/);
+    await p.evaluate(() => { const pb = document.querySelector('#panel-body'); pb.scrollTop += document.querySelector('#permits-sec').getBoundingClientRect().top - pb.getBoundingClientRect().top - 8; });
+    await p.waitForTimeout(200);
+    await p.screenshot({ path: path.join(OUT, '2b-telefono-permessi.png') });
+  });
+
   await step('elenco punti critici con cartelli', async () => {
     await p.evaluate(() => { const s = document.querySelector('#hazards').closest('.res-sec'); document.querySelector('#panel-body').scrollTop = s.offsetTop - 10; });
     await p.waitForTimeout(200);
@@ -260,6 +291,10 @@ async function setupRoutes(context) {
     await p.waitForFunction(() => /Tappa B: Bologna/.test(document.querySelector('#timeline').textContent), null, { timeout: 10000 });
     const tl = await p.textContent('#timeline');
     assert.match(tl, /Sosta 1 h/);
+    await p.waitForFunction(() => /Bologna/.test(document.querySelector('#permits').textContent), null, { timeout: 15000 });
+    const bo = p.locator('#permits .pm', { hasText: 'Bologna' });
+    assert.match(await bo.textContent(), /Accesso limitato/);
+    assert.match(await bo.textContent(), /Tappa B/);
     assert.equal(await p.locator('.pin').count(), 3);
   });
 

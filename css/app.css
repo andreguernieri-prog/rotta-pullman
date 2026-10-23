@@ -334,6 +334,26 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 .pk-icon small { font-size: 8.5px; letter-spacing: .06em; margin-top: -10px; }
 .pk-group { font: 600 12px/1.2 var(--font-body); color: var(--muted); letter-spacing: .06em; text-transform: uppercase; margin-top: 4px; }
 
+.permits { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.pm { border: 1px solid var(--line); border-radius: var(--r); padding: 12px; display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
+.pm p { margin: 0; }
+.pm-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.pm-badge { min-width: 28px; height: 28px; padding: 0 8px; border-radius: 14px; background: var(--fg); color: var(--surface); display: grid; place-items: center; font: 700 14px/1 var(--font-display); letter-spacing: .04em; }
+.pm-name { flex: 1; min-width: 130px; display: flex; flex-direction: column; }
+.pm-name b { font-size: 16px; }
+.pm-name span { color: var(--muted); font-size: 12.5px; }
+.pm-title { font-weight: 700; }
+.pm-permesso .pm-sev { background: var(--amber-soft); color: var(--amber); }
+.pm-limitato .pm-sev { background: var(--red-soft); color: var(--red); }
+.pm-verifica .pm-sev, .pm-ignoto .pm-sev, .pm-estero .pm-sev { background: var(--surface-2); color: var(--muted); }
+.pm-how summary { cursor: pointer; font-weight: 700; color: var(--accent); }
+.pm-steps { margin: 8px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.pm-links { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; font-weight: 600; }
+.pm-links a.pm-main { display: inline-flex; align-items: center; min-height: 36px; padding: 6px 12px; border-radius: 8px; background: var(--accent); color: var(--accent-ink); text-decoration: none; }
+.pm-source { color: var(--muted); font-size: 12.5px; }
+.tl-body .tl-permit { display: block; margin-top: 2px; color: var(--amber); font-weight: 600; font-size: 13px; }
+.tl-body .tl-permit.limitato { color: var(--red); }
+.chip-permit { appearance: none; cursor: pointer; background: var(--amber-soft); color: var(--amber); border-color: transparent; font-family: inherit; }
 .steps-wrap summary { cursor: pointer; font: 600 19px/1.15 var(--font-display); }
 .steps { list-style: none; margin: 0; padding: 0; }
 .step { display: grid; grid-template-columns: 28px 1fr auto; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); align-items: center; cursor: pointer; }
@@ -423,6 +443,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
   .print-head { display: block; margin-bottom: 10mm; }
   .print-head h1 { font: 700 24pt/1.1 var(--font-display); margin: 0 0 4px; }
   .print-head p { margin: 0; }
-  .res-sec, .hz, .pk, .tl { break-inside: avoid; }
+  .res-sec, .hz, .pk, .tl, .pm { break-inside: avoid; }
+  .pm-how > summary { list-style: none; }
   .steps-wrap > summary { list-style: none; }
 }

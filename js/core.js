@@ -800,12 +800,54 @@
     }
   }
 
+  /* ------------------------------------------------------------------ */
+  /* Permessi per i bus nei comuni                                       */
+  /* ------------------------------------------------------------------ */
+  function normName(s) {
+    return String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[’'`]/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim();
+  }
+
+  /* place: {nome, prov, paese} -> regola del comune, oppure null */
+  function matchPermit(place, regole) {
+    if (!place || !place.nome) return null;
+    if (place.paese && place.paese !== 'IT') return null;
+    const n = normName(place.nome);
+    for (const r of regole || []) {
+      for (const c of r.comuni) {
+        if (normName(c.nome) !== n) continue;
+        if (place.prov && c.prov && place.prov !== c.prov) continue;
+        return r;
+      }
+    }
+    return null;
+  }
+
+  /*
+   * Raggruppa le tappe per comune. stops: [{label}], places: [{nome, prov, paese} | null]
+   * Restituisce [{key, place, rule, stops: [indici]}], destinazione per prima, poi le tappe in ordine.
+   */
+  function groupPermits(places, regole) {
+    const n = places.length;
+    const order = n ? [n - 1].concat(Array.from({ length: n - 1 }, (_, i) => i)) : [];
+    const out = [];
+    for (const i of order) {
+      const pl = places[i];
+      const key = pl && pl.nome ? (normName(pl.nome) + '|' + (pl.prov || '')) : 'ignoto-' + i;
+      let g = out.find((x) => x.key === key);
+      if (!g) { g = { key, place: pl, rule: matchPermit(pl, regole), stops: [] }; out.push(g); }
+      g.stops.push(i);
+    }
+    for (const g of out) g.stops.sort((a, b) => a - b);
+    return out;
+  }
+
   return {
     PRESETS, LIMITS, RULES, sanitizeVehicle,
     haversine, bearing, decodePolyline, encodePolyline, simplify, RouteIndex,
     buildCumTime, splitByDistance, normalizeValhalla, normalizeOrs, finishRoute, timeAtAlong, alongAtTime,
     parseLength, parseWeight, evaluateTags, hasRestrictionTags, wayRelation, analyzeElements,
     planTrip, fmtDur, fmtDist, fmtClock, fmtNum, stopLetter, parseCoords,
-    buildGpx, encodeShare, decodeShare,
+    buildGpx, encodeShare, decodeShare, normName, matchPermit, groupPermits,
   };
 });

@@ -183,6 +183,11 @@
             <button type="button" class="btn-secondary" id="btn-print">Foglio di viaggio</button>
           </div>
 
+          <section class="res-sec" id="permits-sec">
+            <h2>Permessi e ZTL</h2>
+            <ul class="permits" id="permits"></ul>
+          </section>
+
           <section class="res-sec">
             <h2>Programma</h2>
             <ol class="timeline" id="timeline"></ol>
@@ -204,12 +209,11 @@
             <ol class="steps" id="steps"></ol>
           </details>
 
-          <p class="note"><b>ZTL e permessi.</b> Molte città d'arte chiedono un permesso o una prenotazione per i bus turistici e indicano aree di carico e scarico dedicate. Controlla sempre il sito del comune di destinazione.</p>
         </div>
       </section>
 
       <footer class="panel-foot">
-        <p>Dati © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">contributori OpenStreetMap</a>. Calcolo: <a href="https://valhalla1.openstreetmap.de" target="_blank" rel="noopener">Valhalla FOSSGIS</a> o <a href="https://openrouteservice.org" target="_blank" rel="noopener">openrouteservice</a>; ricerca: Photon; controlli: Overpass API.</p>
+        <p>Dati © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">contributori OpenStreetMap</a>. Calcolo: <a href="https://valhalla1.openstreetmap.de" target="_blank" rel="noopener">Valhalla FOSSGIS</a> o <a href="https://openrouteservice.org" target="_blank" rel="noopener">openrouteservice</a>; ricerca: Photon e Nominatim; controlli: Overpass API. Regole per i bus nei comuni raccolte dai siti ufficiali.</p>
         <p>Strumento di supporto alla pianificazione: le mappe possono essere incomplete. Segui sempre la segnaletica stradale.</p>
       </footer>
     </div>
@@ -222,6 +226,7 @@
 <script src="vendor/leaflet/leaflet.js"></script>
 <script src="js/core.js"></script>
 <script src="js/services.js"></script>
+<script src="js/permessi.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>
