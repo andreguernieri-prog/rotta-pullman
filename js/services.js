@@ -210,30 +210,82 @@
     return list;
   }
 
-  async function overpass(query, signal, timeoutMs) {
-    let last = null;
+  /*
+   * Le richieste a Overpass partono una alla volta: i server pubblici concedono poche
+   * richieste contemporanee per utente e rispondono 429 a chi ne manda troppe insieme.
+   */
+  let overpassQueue = Promise.resolve();
+  function queued(fn) {
+    const run = overpassQueue.then(fn, fn);
+    overpassQueue = run.catch(() => {});
+    return run;
+  }
+
+  const hostOf = (u) => { try { return new URL(u).host.replace(/^www\./, ''); } catch (e) { return u; } };
+
+  /* secondi da attendere secondo la pagina di stato del server ("... in 7 seconds.") */
+  async function overpassWait(ep, signal) {
+    try {
+      const r = await request(ep.replace(/\/interpreter$/, '/status'), { signal }, 8000);
+      const t = r.text || '';
+      if (/slots? available now/i.test(t)) return 1;
+      const m = t.match(/in (\d+) seconds?/i);
+      if (m) return Math.min(30, Number(m[1]) + 1);
+    } catch (e) {
+      if (e.code === 'aborted') throw e;
+    }
+    return 5;
+  }
+
+  function overpass(query, signal, timeoutMs) {
+    return queued(() => overpassNow(query, signal, timeoutMs));
+  }
+
+  async function overpassNow(query, signal, timeoutMs) {
+    if (signal && signal.aborted) throw new ServiceError('Operazione annullata.', 'aborted');
+    const log = [];
+    let busy = false, heavy = false;
     for (const ep of overpassOrder()) {
-      for (let attempt = 0; attempt < 2; attempt++) {
+      const host = hostOf(ep);
+      let waited = 0;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        let r;
         try {
-          const r = await request(ep, { method: 'POST', body: new URLSearchParams({ data: query }), signal }, timeoutMs || 60000);
-          if (r.ok && r.data && Array.isArray(r.data.elements)) {
-            if (r.data.remark && /runtime error|timed out|out of memory/i.test(r.data.remark)) {
-              last = new ServiceError('Il server OpenStreetMap non ha completato il controllo.', 'heavy');
-              break;
-            }
-            preferredOverpass = ep;
-            return r.data;
-          }
-          if (r.status === 429 && attempt === 0) { await sleep(3000, signal); continue; } // server pieno: si riprova una volta
-          last = new ServiceError(r.status === 429 ? 'I server OpenStreetMap sono occupati.' : 'I server OpenStreetMap non rispondono.', 'overpass');
+          r = await request(ep, { method: 'POST', body: new URLSearchParams({ data: query }), signal }, timeoutMs || 60000);
         } catch (e) {
           if (e.code === 'aborted') throw e;
-          last = e;
+          log.push(`${host}: ${e.code === 'timeout' ? 'nessuna risposta in tempo' : 'non raggiungibile'}`);
+          break;
         }
+        if (r.ok && r.data && Array.isArray(r.data.elements)) {
+          if (r.data.remark && /runtime error|timed out|out of memory/i.test(r.data.remark)) {
+            heavy = true;
+            log.push(`${host}: ricerca troppo pesante`);
+            break;
+          }
+          preferredOverpass = ep;
+          return r.data;
+        }
+        const full = r.status === 429 || r.status === 504;
+        if (full) busy = true;
+        if (full && attempt < 2 && waited < 40) {
+          // server pieno: si aspetta quanto indica il server e si riprova lo stesso server
+          const sec = await overpassWait(ep, signal);
+          waited += sec;
+          await sleep(sec * 1000, signal);
+          continue;
+        }
+        log.push(`${host}: ${full ? 'occupato (' + r.status + ')' : r.ok ? 'risposta non valida' : 'errore ' + r.status}`);
         break;
       }
     }
-    throw last || new ServiceError('I server OpenStreetMap non rispondono.', 'overpass');
+    const err = new ServiceError(
+      busy ? 'I server OpenStreetMap sono occupati: troppe richieste in poco tempo.'
+        : heavy ? 'Il server OpenStreetMap non ha completato la ricerca.'
+          : 'I server OpenStreetMap non rispondono.',
+      busy ? 'busy' : 'overpass');
+    err.detail = log.join(' · ');
+    throw err;
   }
 
   const RESTRICTION_KEYS = '^(maxheight|maxheight:physical|maxwidth|maxwidth:physical|maxlength|maxweight|maxweightrating|maxaxleload)$';

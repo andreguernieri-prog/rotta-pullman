@@ -328,6 +328,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 .sev-red-bg { background: var(--red-soft); color: var(--red); }
 .sev-amber-bg { background: var(--amber-soft); color: var(--amber); }
 .none { color: var(--muted); font-size: 14px; padding: 4px 0; }
+.err-detail { display: block; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 
 .pk { display: grid; grid-template-columns: 36px 1fr; gap: 12px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r); }
 .pk-icon { width: 36px; height: 36px; border-radius: 6px; background: var(--accent); color: #fff; display: grid; place-items: center; font: 700 20px/1 var(--font-display); }

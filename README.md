@@ -66,7 +66,7 @@ tests/                test della logica e test end-to-end
 ## Test
 
 ```
-node --test tests/core.test.js          # logica (nessuna dipendenza)
+node --test tests/core.test.js tests/services.test.js   # logica e chiamate ai servizi (nessuna dipendenza)
 npm install && npm run test:e2e         # interfaccia, con servizi esterni simulati
 ```
 

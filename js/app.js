@@ -865,8 +865,8 @@
       renderResult();
       showTab('percorso');
       fitAll();
+      runParkings(my, signal); // richiesta breve: entra per prima nella coda di Overpass
       runAnalysis(my, signal);
-      runParkings(my, signal);
       runPermits(my, signal);
     } catch (e) {
       if (my !== seq || e.code === 'aborted') return;
@@ -905,6 +905,7 @@
         if (my !== seq || state.analysis !== a || e.code === 'aborted') return;
         a.failed.push(i);
         a.lastError = e.message;
+        a.lastDetail = e.detail;
       }
       a.done++;
       Object.assign(a, C.analyzeElements(Array.from(elements.values()), r.index, r.vehicle));
@@ -926,7 +927,23 @@
     const r = state.route;
     const pts = r.stops.map((s, i) => ({ lat: s.lat, lon: s.lon, i })).slice(1);
     try {
-      const els = await API.parkings(pts, 1500, signal);
+      let els;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          els = await API.parkings(pts, 1500, signal);
+          break;
+        } catch (e) {
+          if (e.code === 'aborted' || attempt >= 1) throw e;
+          // un secondo tentativo automatico, dopo una pausa, prima di mostrare l'errore
+          if (my !== seq) return;
+          state.parkings = { status: 'retrying', reason: e.message };
+          renderParkings();
+          await API.sleep(20000, signal);
+          if (my !== seq) return;
+          state.parkings = { status: 'loading' };
+          renderParkings();
+        }
+      }
       if (my !== seq) return;
       const seen = new Set();
       const groups = pts.map((p) => ({ stop: p.i, items: [] }));
@@ -950,7 +967,7 @@
       state.parkings = { status: 'done', groups };
     } catch (e) {
       if (my !== seq || e.code === 'aborted') return;
-      state.parkings = { status: 'error', reason: e.message };
+      state.parkings = { status: 'error', reason: e.message, detail: e.detail };
     }
     drawParkings();
     renderParkings();
@@ -1135,9 +1152,11 @@
         body.append(
           h('span', { class: 'so-far', text: `${plural(a.failed.length, 'tratto', 'tratti')} su ${tot} non ${a.failed.length === 1 ? 'verificato' : 'verificati'}: i server OpenStreetMap non hanno risposto.` }),
           h('button', { type: 'button', class: 'btn-ghost', onclick: () => retryAnalysis(a.failed.slice()) }, 'Verifica i tratti mancanti'));
+        if (a.lastDetail) body.append(h('span', { class: 'err-detail', text: 'Dettagli: ' + a.lastDetail }));
       }
     } else {
       body.append(h('b', { text: a.status === 'skipped' ? 'Controllo dei limiti non eseguito' : 'Controllo dei limiti non riuscito' }), a.reason || '');
+      if (a.lastDetail) body.append(h('span', { class: 'err-detail', text: 'Dettagli: ' + a.lastDetail }));
       if (a.status === 'error') {
         body.append(h('br'), h('button', { type: 'button', class: 'btn-ghost', onclick: () => { state.analysis = null; retryAnalysis(); } }, 'Riprova il controllo'));
       }
@@ -1334,6 +1353,7 @@
     const p = state.parkings;
     const r = state.route;
     if (!p || p.status === 'loading') { ul.append(h('li', { class: 'none' }, 'Ricerca dei parcheggi in corso…')); return; }
+    if (p.status === 'retrying') { ul.append(h('li', { class: 'none' }, `${p.reason || 'Ricerca non riuscita.'} Riprovo tra 20 secondi…`)); return; }
     if (p.status !== 'done') {
       ul.append(h('li', { class: 'none' }, 'Ricerca dei parcheggi non riuscita. ' + (p.reason || '') + ' ',
         h('button', { type: 'button', class: 'btn-ghost', onclick: () => {
@@ -1341,6 +1361,7 @@
           state.parkings = { status: 'loading' }; renderParkings();
           runParkings(seq, workCtrl ? workCtrl.signal : undefined);
         } }, 'Riprova')));
+      if (p.detail) ul.append(h('li', { class: 'err-detail', text: 'Dettagli: ' + p.detail }));
       return;
     }
     let any = false;

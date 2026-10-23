@@ -34,7 +34,7 @@ function serve() {
 
 /* ---------------- servizi simulati ---------------- */
 const VIA_A1 = [[45.4860, 9.2044], [45.40, 9.33], [45.31, 9.50], [45.05, 9.70], [44.80, 10.33], [44.65, 10.93], [44.50, 11.34], [44.25, 11.30], [43.95, 11.20], [43.7629, 11.2650]];
-const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0 };
+const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0 };
 
 function densify(pts, step) {
   const out = [];
@@ -151,6 +151,21 @@ function mockNominatimReverse(url) {
   return { place_id: 1, name: c.nome, address: { city: c.nome, 'ISO3166-2-lvl6': 'IT-' + c.prov, country: 'Italia', country_code: 'it' } };
 }
 
+async function answerOverpass(route, json) {
+  const data = new URLSearchParams(route.request().postData() || '').get('data') || '';
+  if (/amenity=parking/.test(data) && mocks.parkingFail > 0) {
+    mocks.parkingFail--;
+    return route.fulfill({ status: 429, contentType: 'text/plain', headers: { 'Access-Control-Allow-Origin': '*' }, body: 'rate_limited' });
+  }
+  if (!/amenity=parking/.test(data)) {
+    mocks.corridorCalls++;
+    if (mocks.failCorridor.has(mocks.corridorCalls)) return route.fulfill({ status: 504, contentType: 'text/html', headers: { 'Access-Control-Allow-Origin': '*' }, body: 'Gateway Timeout' });
+    if (mocks.delay) await new Promise((r) => setTimeout(r, mocks.delay));
+    mocks.corridorSeen = Math.max(mocks.corridorSeen, (data.match(/way\(around:10,/g) || []).length);
+  }
+  return json(mockOverpass(data));
+}
+
 let tilePng = null;
 async function setupRoutes(context) {
   await context.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
@@ -160,15 +175,15 @@ async function setupRoutes(context) {
     if (url.includes('photon.komoot.io')) return json(mockPhoton(url));
     if (url.includes('nominatim.openstreetmap.org/reverse')) return json(mockNominatimReverse(url));
     if (url.includes('nominatim.openstreetmap.org')) return json([]);
+    if (url.includes('/api/status')) {
+      return route.fulfill({ status: 200, contentType: 'text/plain', headers: { 'Access-Control-Allow-Origin': '*' }, body: 'Rate limit: 2\nSlot available after: 2026-10-23T10:00:00Z, in 0 seconds.\n' });
+    }
     if (url.includes('/api/interpreter')) {
-      const data = new URLSearchParams(route.request().postData() || '').get('data') || '';
-      if (!/amenity=parking/.test(data)) {
-        mocks.corridorCalls++;
-        if (mocks.failCorridor.has(mocks.corridorCalls)) return route.fulfill({ status: 504, contentType: 'text/html', body: 'Gateway Timeout' });
-        if (mocks.delay) await new Promise((r) => setTimeout(r, mocks.delay));
-        mocks.corridorSeen = Math.max(mocks.corridorSeen, (data.match(/way\(around:10,/g) || []).length);
-      }
-      return json(mockOverpass(data));
+      mocks.inflight++; mocks.maxInflight = Math.max(mocks.maxInflight, mocks.inflight);
+      try {
+        await new Promise((r) => setTimeout(r, 20));
+        return await answerOverpass(route, json);
+      } finally { mocks.inflight--; }
     }
     if (/tile\.openstreetmap\.org|arcgisonline/.test(url)) return route.fulfill({ status: 200, contentType: 'image/png', body: tilePng });
     if (url.startsWith('https://fonts.googleapis.com/') && FONTS) {
@@ -330,10 +345,27 @@ async function setupRoutes(context) {
   /* --- un tratto del controllo non risponde, poi si riprova --- */
   await phone.close(); // il contatore delle richieste simulate è condiviso: niente altre pagine attive
   {
+    const pctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    await setupRoutes(pctx);
+    mocks.parkingFail = 1;
+    mocks.maxInflight = 0;
+    const q = await pctx.newPage();
+    watch(q, 'parcheggi 429');
+    await q.goto(base);
+    await step('parcheggi: server occupato, attesa e risultato senza errori', async () => {
+      await q.waitForFunction(() => document.querySelectorAll('#parkings .pk').length > 0, null, { timeout: 20000 });
+      assert.doesNotMatch(await q.textContent('#parkings'), /non riuscita/);
+      assert.equal(mocks.parkingFail, 0);
+      await q.waitForSelector('#check-banner.red', { timeout: 20000 });
+      assert.equal(mocks.maxInflight, 1, 'le richieste a Overpass devono partire una alla volta');
+    });
+    await pctx.close();
+  }
+  {
     const rctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: 'it-IT', timezoneId: 'Europe/Rome' });
     await setupRoutes(rctx);
     mocks.corridorCalls = 0;
-    mocks.failCorridor = new Set([2, 3, 4]); // il 2° tratto fallisce su tutti e tre i server
+    mocks.failCorridor = new Set([2, 3, 4, 5, 6, 7, 8, 9, 10]); // il 2° tratto fallisce: 3 server, 3 tentativi ciascuno
     const q = await rctx.newPage();
     watch(q, 'tratto mancante');
     await q.goto(base);
