@@ -284,6 +284,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 .osm-check .progress { display: block; height: 6px; margin-top: 10px; border-radius: 3px; background: var(--line); overflow: hidden; }
 .osm-check .progress span { display: block; height: 100%; background: var(--accent); transition: width .3s ease; }
 .osm-check .so-far { display: block; margin-top: 6px; font-weight: 600; }
+.osm-check .so-far.src { font-weight: 400; color: var(--muted); font-size: 12.5px; }
 .osm-check b { display: block; }
 .osm-check .btn-ghost { padding: 0; height: auto; margin-top: 4px; }
 

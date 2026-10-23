@@ -384,5 +384,83 @@ out body center;`;
     return { nome, prov: null, paese: p.countrycode ? String(p.countrycode).toUpperCase() : null, fonte: 'photon' };
   }
 
-  root.RPServices = { URLS, ServiceError, geocode, geocodeFallback, reverse, routeValhalla, routeOrs, corridor, corridorQuery, parkings, valhallaBody, comuneAt, sleep };
+  /* ------------------------------ Dati scaricati (riquadri) ------------------------------ */
+  /*
+   * Ogni settimana GitHub Actions prepara i limiti di tutta Italia in riquadri di 0,25° e li
+   * pubblica sul ramo "dati" del repository. L'app scarica solo i riquadri del percorso e li
+   * conserva sul dispositivo finché non esce un aggiornamento.
+   */
+  function dataBase() {
+    try {
+      const host = location.hostname;
+      const repo = location.pathname.split('/').filter(Boolean)[0];
+      if (/\.github\.io$/.test(host) && repo) return `https://raw.githubusercontent.com/${host.split('.')[0]}/${repo}/dati/`;
+    } catch (e) { /* fuori dal browser */ }
+    return 'https://raw.githubusercontent.com/andreguernieri-prog/rotta-pullman/dati/';
+  }
+  URLS.dati = dataBase();
+  const DATA_CACHE = 'rotta-pullman-dati';
+  let indexPromise = null;
+
+  async function openDataCache() {
+    try { return typeof caches !== 'undefined' ? await caches.open(DATA_CACHE) : null; } catch (e) { return null; }
+  }
+
+  async function dropOldTiles(generato) {
+    const c = await openDataCache();
+    if (!c) return;
+    try {
+      const tag = 'v=' + encodeURIComponent(generato);
+      for (const req of await c.keys()) if (!req.url.includes(tag)) await c.delete(req);
+    } catch (e) { /* pulizia non essenziale */ }
+  }
+
+  /* indice dei dati, o null se non disponibile (l'app userà Overpass) */
+  function dataIndex() {
+    if (!indexPromise) {
+      indexPromise = (async () => {
+        const r = await request(URLS.dati + 'index.json?h=' + Math.floor(Date.now() / 36e5), {}, 15000);
+        if (!r.ok || !r.data || r.data.versione !== 1 || !r.data.riquadri || !r.data.copertura) return null;
+        dropOldTiles(r.data.generato);
+        return r.data;
+      })().catch(() => null);
+      indexPromise.then((v) => { if (!v) indexPromise = null; });
+    }
+    return indexPromise;
+  }
+
+  const tileMem = new Map();
+  async function dataTile(index, key, signal) {
+    const url = URLS.dati + 'riquadri/' + key + '.json?v=' + encodeURIComponent(index.generato);
+    if (tileMem.has(url)) return tileMem.get(url);
+    const c = await openDataCache();
+    let data = null;
+    if (c) { try { const hit = await c.match(url); if (hit) data = await hit.json(); } catch (e) { data = null; } }
+    if (!data) {
+      const r = await request(url, { signal }, 30000);
+      if (!r.ok || !r.data) throw new ServiceError('Dati dei limiti non disponibili per questa zona.', 'tile');
+      data = r.data;
+      if (c) { try { await c.put(url, new Response(r.text, { headers: { 'Content-Type': 'application/json' } })); } catch (e) { /* memoria piena */ } }
+    }
+    tileMem.set(url, data);
+    if (tileMem.size > 120) tileMem.delete(tileMem.keys().next().value);
+    return data;
+  }
+
+  /* riquadri richiesti, quattro alla volta; quelli vuoti non esistono e si saltano */
+  async function dataTiles(index, keys, signal) {
+    const wanted = keys.filter((k) => index.riquadri[k]);
+    const out = [];
+    let next = 0;
+    const worker = async () => {
+      while (next < wanted.length) {
+        const k = wanted[next++];
+        out.push(await dataTile(index, k, signal));
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    return out;
+  }
+
+  root.RPServices = { URLS, ServiceError, geocode, geocodeFallback, reverse, routeValhalla, routeOrs, corridor, corridorQuery, parkings, valhallaBody, comuneAt, sleep, dataIndex, dataTiles };
 })(typeof self !== 'undefined' ? self : this);

@@ -199,6 +199,17 @@
     return best;
   };
 
+  /* il percorso passa entro marginM metri dal rettangolo? (filtro veloce, può dare falsi positivi) */
+  RouteIndex.prototype.nearBox = function (minLat, minLon, maxLat, maxLon, marginM) {
+    const { kx, ky } = metersPerDeg((minLat + maxLat) / 2);
+    const dLat = marginM / ky, dLon = marginM / kx, cell = this.cell;
+    const y0 = Math.floor((minLat - dLat) / cell), y1 = Math.floor((maxLat + dLat) / cell);
+    const x0 = Math.floor((minLon - dLon) / cell), x1 = Math.floor((maxLon + dLon) / cell);
+    if ((y1 - y0 + 1) * (x1 - x0 + 1) > 400) return true;
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (this.grid.has(cellKey(y, x))) return true;
+    return false;
+  };
+
   RouteIndex.prototype.pointAt = function (along) {
     const c = this.coords, d = this.cumD, n = c.length;
     if (!n) return null;
@@ -526,6 +537,9 @@
         if (!r) continue;
         rel = { onRoute: true, alongStart: r.along, alongEnd: r.along, point: [el.lat, el.lon] };
       } else if (el.geometry && el.geometry.length > 1) {
+        let a0 = Infinity, o0 = Infinity, a1 = -Infinity, o1 = -Infinity;
+        for (const g of el.geometry) { if (g.lat < a0) a0 = g.lat; if (g.lat > a1) a1 = g.lat; if (g.lon < o0) o0 = g.lon; if (g.lon > o1) o1 = g.lon; }
+        if (!idx.nearBox(a0, o0, a1, o1, 40)) continue;
         rel = wayRelation(el.geometry, idx, 6);
       } else continue;
 
@@ -801,6 +815,91 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* Riquadri dei dati scaricati (limiti, aree di servizio, parcheggi)   */
+  /* ------------------------------------------------------------------ */
+  function tileKey(lat, lon, size) {
+    return Math.floor(lat / size) + '_' + Math.floor(lon / size);
+  }
+
+  /* riquadri che toccano un cerchio di raggio r metri */
+  function tilesAround(lat, lon, r, size) {
+    const { kx, ky } = metersPerDeg(lat);
+    const dLat = r / ky, dLon = r / kx;
+    const out = [];
+    for (let y = Math.floor((lat - dLat) / size); y <= Math.floor((lat + dLat) / size); y++) {
+      for (let x = Math.floor((lon - dLon) / size); x <= Math.floor((lon + dLon) / size); x++) out.push(y + '_' + x);
+    }
+    return out;
+  }
+
+  /* riquadri attraversati da una linea, con un margine in metri */
+  function tilesForCoords(coords, size, marginM) {
+    const keys = new Set();
+    const step = Math.min(5000, (size * 110540) / 4);
+    for (let i = 0; i < coords.length; i++) {
+      const a = coords[i];
+      tilesAround(a[0], a[1], marginM, size).forEach((k) => keys.add(k));
+      const b = coords[i + 1];
+      if (!b) break;
+      const d = haversine(a, b);
+      for (let s = step; s < d; s += step) {
+        const t = s / d;
+        tilesAround(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, marginM, size).forEach((k) => keys.add(k));
+      }
+    }
+    return Array.from(keys);
+  }
+
+  /* punto dentro uno degli anelli [[lat, lon], ...] (copertura dei dati) */
+  function pointInRings(lat, lon, rings) {
+    for (const ring of rings || []) {
+      let inside = false;
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const yi = ring[i][0], xi = ring[i][1], yj = ring[j][0], xj = ring[j][1];
+        if ((yi > lat) !== (yj > lat) && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) inside = !inside;
+      }
+      if (inside) return true;
+    }
+    return false;
+  }
+
+  /* tutta la linea è coperta dai dati? (controlla un punto ogni ~2 km) */
+  function coordsCovered(coords, rings) {
+    if (!rings || !rings.length || !coords.length) return false;
+    let acc = Infinity;
+    for (let i = 0; i < coords.length; i++) {
+      if (i > 0) acc += haversine(coords[i - 1], coords[i]);
+      if (acc >= 2000 || i === coords.length - 1) {
+        if (!pointInRings(coords[i][0], coords[i][1], rings)) return false;
+        acc = 0;
+      }
+    }
+    return true;
+  }
+
+  /* riquadro compatto -> elementi nella stessa forma delle risposte Overpass */
+  function tileToElements(tile) {
+    const out = [];
+    const typeOf = (ref) => (ref[0] === 'n' ? 'node' : ref[0] === 'w' ? 'way' : 'relation');
+    for (const [ref, g, tags] of tile.r || []) {
+      const pts = decodePolyline(g, 5);
+      if (!pts.length) continue;
+      const id = Number(ref.slice(1));
+      if (ref[0] === 'n') out.push({ type: 'node', id, lat: pts[0][0], lon: pts[0][1], tags });
+      else out.push({ type: typeOf(ref), id, tags, geometry: pts.map((p) => ({ lat: p[0], lon: p[1] })) });
+    }
+    for (const [ref, lat, lon, kind, name] of tile.s || []) {
+      const tags = { highway: kind ? 'services' : 'rest_area' };
+      if (name) tags.name = name;
+      out.push({ type: typeOf(ref), id: Number(ref.slice(1)), center: { lat, lon }, tags });
+    }
+    for (const [ref, lat, lon, tags] of tile.p || []) {
+      out.push({ type: typeOf(ref), id: Number(ref.slice(1)), center: { lat, lon }, tags: Object.assign({ amenity: 'parking' }, tags) });
+    }
+    return out;
+  }
+
+  /* ------------------------------------------------------------------ */
   /* Permessi per i bus nei comuni                                       */
   /* ------------------------------------------------------------------ */
   function normName(s) {
@@ -849,5 +948,6 @@
     parseLength, parseWeight, evaluateTags, hasRestrictionTags, wayRelation, analyzeElements,
     planTrip, fmtDur, fmtDist, fmtClock, fmtNum, stopLetter, parseCoords,
     buildGpx, encodeShare, decodeShare, normName, matchPermit, groupPermits,
+    tileKey, tilesAround, tilesForCoords, pointInRings, coordsCovered, tileToElements,
   };
 });

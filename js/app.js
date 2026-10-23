@@ -896,9 +896,28 @@
     const a = Object.assign({}, prev.hazards ? prev : {}, { status: 'loading', elements, done: 0, total: todo.length, failed: [] });
     state.analysis = a;
     renderCheck(); renderHazards();
+    // dati scaricati: i tratti dentro la copertura (Italia) si controllano senza Overpass
+    const dati = await API.dataIndex();
+    if (my !== seq || state.analysis !== a) return;
+    if (dati) a.datiOsm = dati.datiOsm || dati.generato;
     for (const i of todo) {
+      const seg = r.segments[i];
       try {
-        const els = await API.corridor(r.segments[i].coords, signal);
+        let els = null;
+        if (dati && C.coordsCovered(seg.coords, dati.copertura)) {
+          try {
+            const tiles = await API.dataTiles(dati, C.tilesForCoords(seg.coords, dati.riquadro, 500), signal);
+            els = tiles.flatMap(C.tileToElements);
+            a.usaDati = true;
+          } catch (e) {
+            if (e.code === 'aborted') throw e;
+            els = null; // riquadro non scaricabile: si usa Overpass per questo tratto
+          }
+        }
+        if (!els) {
+          els = await API.corridor(seg.coords, signal);
+          a.usaOverpass = true;
+        }
         if (my !== seq || state.analysis !== a) return;
         for (const el of els) elements.set(el.type + '/' + el.id, el);
       } catch (e) {
@@ -935,6 +954,20 @@
     const cacheKey = dest.lat.toFixed(5) + ',' + dest.lon.toFixed(5);
     try {
       let els = parkCache.get(cacheKey);
+      if (!els) {
+        const dati = await API.dataIndex();
+        if (my !== seq) return;
+        if (dati && C.pointInRings(dest.lat, dest.lon, dati.copertura)) {
+          try {
+            const tiles = await API.dataTiles(dati, C.tilesAround(dest.lat, dest.lon, PARK_RADIUS, dati.riquadro), signal);
+            els = tiles.flatMap(C.tileToElements).filter((e) => e.tags && e.tags.amenity === 'parking');
+            parkCache.set(cacheKey, els);
+          } catch (e) {
+            if (e.code === 'aborted') throw e;
+            els = null;
+          }
+        }
+      }
       for (let attempt = 0; !els; attempt++) {
         try {
           els = await API.parkings(pts, PARK_RADIUS, signal);
@@ -1120,6 +1153,16 @@
 
   const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
+  /* da dove vengono i dati del controllo, e se sono troppo vecchi */
+  function dataSourceNote(a) {
+    if (!a.usaDati) return a.usaOverpass ? { text: 'Dati OpenStreetMap in tempo reale (Overpass).' } : null;
+    const when = new Date(a.datiOsm);
+    const day = isFinite(when) ? when.toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' }) : '';
+    const text = `Dati OpenStreetMap del ${day}` + (a.usaOverpass ? '; per i tratti fuori Italia, dati in tempo reale.' : '.');
+    const ageDays = isFinite(when) ? (Date.now() - when.getTime()) / 864e5 : 0;
+    return { text, old: ageDays > 21 ? `I dati scaricati hanno ${Math.floor(ageDays)} giorni: l'aggiornamento settimanale potrebbe essersi fermato.` : null };
+  }
+
   function renderCheck() {
     const box = $('#check-banner');
     const a = state.analysis;
@@ -1155,6 +1198,9 @@
       } else {
         body.append(h('b', { text: 'Nessun limite incompatibile nei tratti controllati' }));
       }
+      const fonte = dataSourceNote(a);
+      if (fonte) body.append(h('span', { class: 'so-far src', text: fonte.text }));
+      if (fonte && fonte.old) body.append(h('span', { class: 'so-far', text: fonte.old }));
       if (a.status === 'partial') {
         const tot = state.route.segments.length;
         body.append(

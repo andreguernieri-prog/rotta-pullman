@@ -1,0 +1,71 @@
+# Ogni settimana scarica la mappa OpenStreetMap dell'Italia, ne estrae i limiti utili ai bus,
+# le aree di servizio e i parcheggi per bus, e pubblica i riquadri sul ramo "dati".
+# L'app li legge da lì; per i tratti fuori Italia usa ancora Overpass.
+name: Dati dei limiti (Italia)
+
+on:
+  schedule:
+    - cron: '23 2 * * 1' # ogni lunedì alle 2:23 UTC
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - tools/build-data.js
+      - .github/workflows/dati-limiti.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dati-limiti
+  cancel-in-progress: false
+
+jobs:
+  dati:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Installa osmium
+        run: sudo apt-get update -q && sudo apt-get install -y -q osmium-tool
+
+      - name: Scarica l'Italia da Geofabrik
+        run: |
+          curl -fsSL --retry 3 -A "rotta-pullman (github.com/${GITHUB_REPOSITORY})" -o italia.osm.pbf https://download.geofabrik.de/europe/italy-latest.osm.pbf
+          curl -fsSL --retry 3 -A "rotta-pullman (github.com/${GITHUB_REPOSITORY})" -o italia.poly https://download.geofabrik.de/europe/italy.poly
+          ls -lh italia.osm.pbf italia.poly
+
+      - name: Estrai limiti, aree di servizio e parcheggi
+        run: |
+          osmium tags-filter italia.osm.pbf \
+            nw/maxheight nw/maxheight:physical nw/maxwidth nw/maxwidth:physical nw/maxlength \
+            nw/maxweight nw/maxweightrating nw/maxaxleload \
+            w/hgv=no w/bus=no w/tourist_bus=no w/coach=no \
+            nwr/highway=services,rest_area nwr/amenity=parking \
+            -o filtrato.osm.pbf
+          osmium export filtrato.osm.pbf -f geojsonseq -a type,id -o filtrato.geojsonseq
+          ls -lh filtrato.osm.pbf filtrato.geojsonseq
+          echo "OSM_DATE=$(osmium fileinfo -g header.option.osmosis_replication_timestamp italia.osm.pbf)" >> "$GITHUB_ENV"
+
+      - name: Prepara i riquadri
+        run: |
+          node tools/build-data.js filtrato.geojsonseq out --poly italia.poly --osm-date "$OSM_DATE"
+          du -sh out
+
+      - name: Pubblica sul ramo dati
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd out
+          printf '# Dati per Rotta Pullman\n\nGenerati automaticamente da .github/workflows/dati-limiti.yml.\nDati © contributori OpenStreetMap, licenza ODbL. Estrazione Geofabrik del %s.\n' "$OSM_DATE" > README.md
+          git init -q -b dati
+          git add -A
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "Dati dei limiti, estrazione del $OSM_DATE"
+          # un solo commit, sovrascritto ogni settimana: lo storico del repository non cresce
+          git push -q --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" dati

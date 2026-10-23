@@ -10,6 +10,7 @@ const http = require('http');
 const assert = require('assert/strict');
 const { chromium } = require(process.env.PW_MODULE || 'playwright');
 const C = require('../js/core.js');
+const D = require('../tools/build-data.js');
 
 const ROOT = path.join(__dirname, '..');
 const OUT = process.argv[2] || path.join(__dirname, 'screenshots');
@@ -34,7 +35,7 @@ function serve() {
 
 /* ---------------- servizi simulati ---------------- */
 const VIA_A1 = [[45.4860, 9.2044], [45.40, 9.33], [45.31, 9.50], [45.05, 9.70], [44.80, 10.33], [44.65, 10.93], [44.50, 11.34], [44.25, 11.30], [43.95, 11.20], [43.7629, 11.2650]];
-const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [] };
+const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null };
 
 function densify(pts, step) {
   const out = [];
@@ -169,6 +170,28 @@ async function answerOverpass(route, json) {
   return json(mockOverpass(data));
 }
 
+/* dati scaricati simulati: gli stessi elementi delle risposte Overpass, divisi in riquadri */
+function toFeature(el) {
+  const props = Object.assign({ '@type': el.type, '@id': el.id }, el.tags);
+  const geom = el.geometry ? { type: 'LineString', coordinates: el.geometry.map((g) => [g.lon, g.lat]) }
+    : el.center ? { type: 'Point', coordinates: [el.center.lon, el.center.lat] }
+      : { type: 'Point', coordinates: [el.lon, el.lat] };
+  return { type: 'Feature', geometry: geom, properties: props };
+}
+function mockDati() {
+  const c = mocks.lastCoords;
+  if (!c) return null;
+  const dest = c[c.length - 1];
+  const els = mockOverpass('corridoio').elements.concat([
+    { type: 'way', id: 9300, center: { lat: dest[0] + 0.002, lon: dest[1] + 0.002 }, tags: { amenity: 'parking', bus: 'designated', name: 'Parcheggio bus turistici', fee: 'yes' } },
+    { type: 'node', id: 9301, lat: dest[0] - 0.008, lon: dest[1] + 0.001, tags: { amenity: 'parking', hgv: 'yes' } },
+    { type: 'node', id: 9302, lat: dest[0] + 0.012, lon: dest[1], tags: { amenity: 'parking', bus: 'yes', name: 'Parcheggio troppo lontano' } },
+  ]);
+  const b = D.createBuilder();
+  els.forEach((el) => b.add(toFeature(el)));
+  return b.finish({ generato: '2026-10-26T04:00:00Z', datiOsm: '2026-10-25T20:21:02Z', copertura: mocks.datiCopertura || [[[35, 6], [48, 6], [48, 19], [35, 19], [35, 6]]] });
+}
+
 let tilePng = null;
 async function setupRoutes(context) {
   await context.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
@@ -178,6 +201,16 @@ async function setupRoutes(context) {
     if (url.includes('photon.komoot.io')) return json(mockPhoton(url));
     if (url.includes('nominatim.openstreetmap.org/reverse')) return json(mockNominatimReverse(url));
     if (url.includes('nominatim.openstreetmap.org')) return json([]);
+    if (url.startsWith('https://raw.githubusercontent.com/')) {
+      mocks.datiRichieste++;
+      const built = mocks.dati ? mockDati() : null;
+      if (!built) return route.fulfill({ status: 404, contentType: 'text/plain', headers: { 'Access-Control-Allow-Origin': '*' }, body: '404: Not Found' });
+      if (/\/index\.json/.test(url)) return json(built.index);
+      const m = url.match(/riquadri\/(-?\d+_-?\d+)\.json/);
+      const tile = m && built.tiles.get(m[1]);
+      if (!tile) return route.fulfill({ status: 404, contentType: 'text/plain', headers: { 'Access-Control-Allow-Origin': '*' }, body: '404: Not Found' });
+      return json(Object.assign({ v: 1, k: m[1] }, tile));
+    }
     if (url.includes('/api/status')) {
       return route.fulfill({ status: 200, contentType: 'text/plain', headers: { 'Access-Control-Allow-Origin': '*' }, body: 'Rate limit: 2\nSlot available after: 2026-10-23T10:00:00Z, in 0 seconds.\n' });
     }
@@ -402,6 +435,60 @@ async function setupRoutes(context) {
       assert.equal(await q.locator('.leaflet-tile-container img[src*="tile.openstreetmap.org"]').count() > 0, true);
     });
     await rctx.close();
+  }
+
+  /* --- dati scaricati: niente Overpass per i tratti in Italia --- */
+  {
+    const dctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: 'it-IT', timezoneId: 'Europe/Rome' });
+    await setupRoutes(dctx);
+    mocks.dati = true;
+    mocks.corridorCalls = 0;
+    mocks.parkingQueries = [];
+    mocks.datiRichieste = 0;
+    const q = await dctx.newPage();
+    watch(q, 'dati scaricati');
+    await q.goto(base);
+    await step('dati scaricati: controllo e parcheggi senza chiamare Overpass', async () => {
+      await q.waitForSelector('#check-banner.red', { timeout: 20000 });
+      await q.waitForFunction(() => document.querySelectorAll('#parkings .pk').length > 0, null, { timeout: 20000 });
+      assert.equal(mocks.corridorCalls, 0, 'nessuna richiesta Overpass per il controllo');
+      assert.equal(mocks.parkingQueries.length, 0, 'nessuna richiesta Overpass per i parcheggi');
+      assert.ok(mocks.datiRichieste >= 2);
+      assert.equal(await q.locator('#hazards .hz').count(), 3);
+      assert.match(await q.textContent('#check-banner'), /Dati OpenStreetMap del 25 ottobre 2026\./);
+      assert.equal(await q.locator('#parkings .pk').count(), 2);
+      assert.doesNotMatch(await q.textContent('#parkings'), /troppo lontano/);
+      // le pause usano le aree di servizio dei dati scaricati
+      await q.click('#tab-viaggio');
+      await q.selectOption('#in-breaks', 'frazionata');
+      await q.click('#tab-percorso');
+      assert.match(await q.textContent('#timeline'), /Secchia Est/);
+      // secondo calcolo: i riquadri restano sul dispositivo
+      const before = mocks.datiRichieste;
+      await q.evaluate(() => window.__rp.computeRoute());
+      await q.waitForSelector('#check-banner.red', { timeout: 20000 });
+      await q.waitForFunction(() => window.__rp.state.analysis.status === 'done');
+      assert.ok(mocks.datiRichieste - before <= 1, 'al massimo l\'indice, non i riquadri');
+      await q.screenshot({ path: path.join(OUT, '10-dati-scaricati.png') });
+    });
+    await step('dati scaricati solo per una parte del percorso: il resto con Overpass', async () => {
+      // copertura solo a nord di 44,6° (come se il resto fosse all'estero)
+      mocks.datiCopertura = [[[44.6, 6], [48, 6], [48, 19], [44.6, 19], [44.6, 6]]];
+      mocks.corridorCalls = 0;
+      const p2 = await dctx.newPage();
+      watch(p2, 'copertura parziale');
+      await p2.goto(base);
+      await p2.evaluate(() => window.__rp.computeRoute()); // stessa memoria della pagina precedente: niente calcolo automatico
+      await p2.waitForSelector('#check-banner.red', { timeout: 30000 });
+      await p2.waitForFunction(() => window.__rp.state.analysis.status === 'done', null, { timeout: 30000 });
+      const segs = await p2.evaluate(() => window.__rp.state.route.segments.length);
+      assert.ok(mocks.corridorCalls > 0 && mocks.corridorCalls < segs, `Overpass solo per una parte: ${mocks.corridorCalls} di ${segs}`);
+      assert.match(await p2.textContent('#check-banner'), /per i tratti fuori Italia, dati in tempo reale/);
+      assert.equal(await p2.locator('#hazards .hz').count(), 3);
+      mocks.datiCopertura = null;
+    });
+    mocks.dati = false;
+    await dctx.close();
   }
 
   /* --- tema scuro --- */

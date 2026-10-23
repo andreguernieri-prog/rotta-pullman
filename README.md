@@ -13,6 +13,19 @@ Funziona nel browser, su telefono e computer, senza registrazione e senza server
 - **Parcheggi bus** segnati su OpenStreetMap entro 1 km dal punto di arrivo.
 - **Indicazioni svolta per svolta**, **GPX** per i navigatori per mezzi pesanti (OsmAnd, Sygic Truck, Garmin…), **link condivisibile** che riapre lo stesso viaggio con lo stesso mezzo, **foglio di viaggio** stampabile.
 
+## Dati dei limiti scaricati ogni settimana
+
+Per non interrogare i server OpenStreetMap a ogni percorso, la procedura `.github/workflows/dati-limiti.yml` gira ogni lunedì su GitHub Actions:
+
+1. scarica da Geofabrik la mappa OpenStreetMap dell'Italia;
+2. con osmium estrae limiti di altezza, larghezza, lunghezza e peso, divieti per bus e mezzi pesanti, aree di servizio e parcheggi per bus;
+3. con `tools/build-data.js` tiene solo i limiti che riguardano un bus e li divide in riquadri di 0,25° (circa 28 × 20 km);
+4. pubblica il risultato sul ramo `dati`, sovrascrivendolo: lo storico del repository non cresce.
+
+L'app scarica solo i riquadri attraversati dal percorso e li conserva sul dispositivo fino all'aggiornamento successivo. Per i tratti fuori dalla copertura (l'estero) e se i dati non sono disponibili usa Overpass come prima. Il riquadro del controllo indica la data dei dati e avvisa se hanno più di tre settimane.
+
+La procedura si può avviare a mano da GitHub: scheda Actions, "Dati dei limiti (Italia)", Run workflow.
+
 ## Aggiornare le regole dei permessi
 
 Le regole stanno in `js/permessi.js`, una scheda per comune, con la data dell'ultimo controllo. Non esiste un servizio pubblico con questi dati: vanno aggiornate a mano dai siti ufficiali dei comuni e degli enti che rilasciano i permessi. Il file spiega i campi in testa. Dopo una modifica, `node --test tests/core.test.js` controlla che ogni scheda sia completa.
@@ -37,7 +50,7 @@ Tutti gratuiti e basati su dati OpenStreetMap. Sono servizi pubblici con uso "ra
 | Calcolo percorso, alternativa | [openrouteservice](https://openrouteservice.org) (profilo HGV, tipo veicolo *bus*) | Chiave gratuita, 2.000 calcoli/giorno. Tiene conto anche degli accessi riservati ai bus |
 | Ricerca indirizzi | Photon (komoot), riserva Nominatim | |
 | Comune di ogni tappa | Nominatim, riserva Photon | Al massimo una richiesta al secondo |
-| Punti critici, aree di servizio, parcheggi | Overpass API | Un tratto di circa 25 km alla volta, con server di riserva |
+| Punti critici, aree di servizio, parcheggi | Dati OpenStreetMap scaricati ogni settimana (Geofabrik) | In Italia. Fuori Italia o se i dati mancano: Overpass API, un tratto di circa 25 km alla volta |
 | Mappe | OpenStreetMap, Esri (stradale e satellite) | Senza chiave. Le mappe OpenStreetMap funzionano dal sito pubblicato; aprendo il file dal disco si parte con Esri |
 
 Per un uso intenso conviene un'istanza Valhalla propria o un abbonamento a un servizio di calcolo: basta cambiare gli indirizzi in `js/services.js`.
@@ -60,13 +73,15 @@ js/services.js        chiamate ai servizi esterni
 js/app.js             interfaccia e mappa (Leaflet)
 vendor/leaflet/       Leaflet 1.9.4
 tools/build-single.js crea dist/rotta-pullman.html
+tools/build-data.js   prepara i riquadri dei limiti (usato dalla procedura settimanale)
+.github/workflows/    procedura settimanale dei dati
 tests/                test della logica e test end-to-end
 ```
 
 ## Test
 
 ```
-node --test tests/core.test.js tests/services.test.js   # logica e chiamate ai servizi (nessuna dipendenza)
+node --test tests/core.test.js tests/services.test.js tests/data.test.js   # logica, servizi e dati (nessuna dipendenza)
 npm install && npm run test:e2e         # interfaccia, con servizi esterni simulati
 ```
 
