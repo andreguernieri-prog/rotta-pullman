@@ -48,7 +48,7 @@ jobs:
             w/hgv=no w/bus=no w/tourist_bus=no w/coach=no \
             nwr/highway=services,rest_area nwr/amenity=parking \
             -o filtrato.osm.pbf
-          osmium export filtrato.osm.pbf -f geojsonseq -a type,id -o filtrato.geojsonseq
+          osmium export filtrato.osm.pbf -f geojsonseq -a type,id,timestamp,version -o filtrato.geojsonseq
           ls -lh filtrato.osm.pbf filtrato.geojsonseq
           echo "OSM_DATE=$(osmium fileinfo -g header.option.osmosis_replication_timestamp italia.osm.pbf)" >> "$GITHUB_ENV"
 

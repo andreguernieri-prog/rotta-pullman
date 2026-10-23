@@ -35,7 +35,7 @@ function serve() {
 
 /* ---------------- servizi simulati ---------------- */
 const VIA_A1 = [[45.4860, 9.2044], [45.40, 9.33], [45.31, 9.50], [45.05, 9.70], [44.80, 10.33], [44.65, 10.93], [44.50, 11.34], [44.25, 11.30], [43.95, 11.20], [43.7629, 11.2650]];
-const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null };
+const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null, tomtomUrls: [] };
 
 function densify(pts, step) {
   const out = [];
@@ -119,7 +119,7 @@ function mockOverpass(data) {
   return {
     elements: [
       wayOn(c, 0.2, 4, 101, { highway: 'primary', maxheight: '5' }),
-      wayOn(c, 0.35, 4, 102, { highway: 'primary', maxheight: '3.5', name: 'Sottopasso ferroviario', tunnel: 'yes' }),
+      Object.assign(wayOn(c, 0.35, 4, 102, { highway: 'primary', maxheight: '3.5', name: 'Sottopasso ferroviario', tunnel: 'yes', 'source:maxheight': 'sign' }), { timestamp: '2014-05-02T10:00:00Z', version: 3 }),
       wayOn(c, 0.6, 4, 103, { highway: 'secondary', maxheight: '3.9', name: 'Ponte sul Reno' }),
       wayOn(c, 0.82, 6, 104, { highway: 'tertiary', hgv: 'no', name: 'Via dei Colli' }),
       sv(0.3, 160, 201, 'Area di servizio Arda'),
@@ -192,6 +192,20 @@ function mockDati() {
   return b.finish({ generato: '2026-10-26T04:00:00Z', datiOsm: '2026-10-25T20:21:02Z', copertura: mocks.datiCopertura || [[[35, 6], [48, 6], [48, 19], [35, 19], [35, 6]]] });
 }
 
+/* TomTom: in auto segue il nostro percorso; col bus devia tra il 58-62% (ponte da 3,9 m) e il 70-74% del tragitto */
+function mockTomTom(url) {
+  mocks.tomtomUrls.push(url);
+  const c = mocks.lastCoords;
+  const bus = /travelMode=bus/.test(url);
+  const n = c.length;
+  const pts = c.map((p, i) => {
+    const f = i / n;
+    const away = bus && ((f >= 0.58 && f <= 0.62) || (f >= 0.70 && f <= 0.74));
+    return { latitude: p[0], longitude: away ? p[1] + 0.01 : p[1] };
+  });
+  return { formatVersion: '0.0.12', routes: [{ summary: { lengthInMeters: 1, travelTimeInSeconds: 1 }, legs: [{ points: pts }] }] };
+}
+
 let tilePng = null;
 async function setupRoutes(context) {
   await context.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
@@ -201,6 +215,10 @@ async function setupRoutes(context) {
     if (url.includes('photon.komoot.io')) return json(mockPhoton(url));
     if (url.includes('nominatim.openstreetmap.org/reverse')) return json(mockNominatimReverse(url));
     if (url.includes('nominatim.openstreetmap.org')) return json([]);
+    if (url.startsWith('https://api.tomtom.com/routing/')) return json(mockTomTom(url));
+    if (url.startsWith('https://graph.mapillary.com/images')) return json({ data: [{ id: '4242', thumb_256_url: 'https://mapillary-thumb.example/4242.jpg', captured_at: 1690000000000 }] });
+    if (url.startsWith('https://graph.mapillary.com/map_features')) return json({ data: [{ id: '77', object_value: 'regulatory--height-limit--g1', last_seen_at: 1690000000000, geometry: { type: 'Point', coordinates: [0, 0] } }] });
+    if (url.startsWith('https://mapillary-thumb.example/')) return route.fulfill({ status: 200, contentType: 'image/png', body: tilePng });
     if (url.startsWith('https://raw.githubusercontent.com/')) {
       mocks.datiRichieste++;
       const built = mocks.dati ? mockDati() : null;
@@ -314,7 +332,8 @@ async function setupRoutes(context) {
     assert.match(card, /Cosa fare: .*camion.*autobus/s);
     await p.waitForFunction(() => /Viale Galileo/.test(document.querySelector('.hz-popup .hzpop').textContent), null, { timeout: 5000 });
     assert.equal(await p.locator('.hz-marker.focus').count(), 1);
-    // la scheda resta nell'area visibile della mappa, sopra il pannello
+    // la scheda resta nell'area visibile della mappa, sopra il pannello (dopo lo spostamento animato)
+    await p.waitForTimeout(800);
     const box = await p.locator('.hz-popup').boundingBox();
     const panelTop = await p.evaluate(() => document.querySelector('#panel').getBoundingClientRect().top);
     assert.ok(box.y >= 0 && box.y + box.height <= panelTop + 1, `scheda ${Math.round(box.y)}–${Math.round(box.y + box.height)}, pannello da ${Math.round(panelTop)}`);
@@ -512,6 +531,53 @@ async function setupRoutes(context) {
     });
     mocks.dati = false;
     await dctx.close();
+  }
+
+  /* --- seconda verifica con TomTom e foto Mapillary --- */
+  {
+    const tctx = await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: 'it-IT', timezoneId: 'Europe/Rome' });
+    await setupRoutes(tctx);
+    mocks.tomtomUrls = [];
+    const q = await tctx.newPage();
+    watch(q, 'tomtom');
+    await q.goto(base);
+    await q.waitForSelector('#check-banner.red', { timeout: 20000 });
+    await step('seconda verifica TomTom: conferme, smentite e limiti che OSM non ha', async () => {
+      await q.click('#tab-viaggio');
+      await q.click('#opt-details summary');
+      await q.fill('#opt-tomtomkey', 'CHIAVE-PROVA');
+      await q.press('#opt-tomtomkey', 'Tab');
+      await q.fill('#opt-mapillary', 'TOKEN-PROVA');
+      await q.press('#opt-mapillary', 'Tab');
+      await q.click('#btn-route');
+      await q.waitForFunction(() => /Seconda verifica con TomTom: 2 tratti evitati/.test(document.querySelector('#check-banner').textContent), null, { timeout: 20000 });
+      assert.equal(mocks.tomtomUrls.length, 2);
+      const busUrl = mocks.tomtomUrls.find((u) => /travelMode=bus/.test(u));
+      assert.match(busUrl, /vehicleHeight=3\.85/);
+      assert.match(busUrl, /vehicleWeight=25000/);
+      assert.match(busUrl, /key=CHIAVE-PROVA/);
+      await q.waitForFunction(() => window.__rp.state.analysis.status === 'done' && document.querySelectorAll('#hazards .hz').length === 4, null, { timeout: 30000 });
+      const items = await q.locator('#hazards .hz').allTextContents();
+      assert.ok(items.some((t) => /Tratto evitato da TomTom/.test(t)), 'tratto segnalato solo da TomTom');
+      assert.ok(items.some((t) => /Altezza massima 3,9 m.*Anche TomTom evita/s.test(t)), 'ponte confermato');
+      assert.ok(items.some((t) => /Divieto per mezzi pesanti.*TomTom percorre/s.test(t)), 'divieto camion smentito');
+      assert.match(await q.textContent('#check-banner'), /Vedi tutti i 4 punti/);
+      // scheda del sottopasso: data, fonte, dubbio, foto e cartelli Mapillary, segnalazione
+      await q.locator('#check-banner .check-pt').first().click();
+      await q.waitForSelector('.hz-popup .hzpop-photo img', { timeout: 8000 });
+      const card = await q.textContent('.hz-popup .hzpop');
+      assert.match(card, /Dato OpenStreetMap: modificato il 2 maggio 2014 \(versione 3\) · fonte: cartello stradale\./);
+      assert.match(card, /Dato non aggiornato da 12 anni/);
+      assert.match(card, /Cartelli rilevati nelle foto Mapillary: altezza massima/);
+      assert.match(card, /i due dati non concordano/); // OSM: 3,5 m non transitabile, TomTom invece passa
+      assert.equal(await q.locator('.hz-popup a', { hasText: 'Segnala un errore' }).count(), 1);
+      assert.match(await q.locator('.hz-popup a', { hasText: 'Segnala un errore' }).getAttribute('href'), /openstreetmap\.org\/note\/new#map=19\//);
+      await q.screenshot({ path: path.join(OUT, '11-scheda-verifiche.png') });
+      // le chiavi non finiscono nel link condiviso
+      const shared = await q.evaluate(() => RPCore.encodeShare(window.__rp.state));
+      assert.doesNotMatch(Buffer.from(shared.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString(), /CHIAVE-PROVA|TOKEN-PROVA/);
+    });
+    await tctx.close();
   }
 
   /* --- tema scuro --- */

@@ -26,6 +26,17 @@ L'app scarica solo i riquadri attraversati dal percorso e li conserva sul dispos
 
 La procedura si può avviare a mano da GitHub: scheda Actions, "Dati dei limiti (Italia)", Run workflow.
 
+## Verifica dei dati di OpenStreetMap
+
+I limiti di OpenStreetMap sono inseriti da volontari e possono contenere errori. Per ogni punto critico la scheda mostra:
+
+- data dell'ultima modifica, versione e fonte dichiarata del dato (per esempio "cartello stradale"), con un avviso se il dato ha molti anni o se il valore è insolito per il tipo di strada;
+- **seconda verifica con TomTom** (facoltativa): con una chiave gratuita di developer.tomtom.com, inserita nelle preferenze di percorso, l'app calcola lo stesso viaggio con TomTom due volte, con le dimensioni del mezzo e come auto. Dove TomTom percorre il tratto in auto ma lo evita col bus, conosce probabilmente un limite: l'app conferma i punti di OpenStreetMap, segnala quando i due dati non concordano e aggiunge i tratti che OpenStreetMap non riporta;
+- **foto Mapillary**: collegamento alle foto stradali del punto; con un token gratuito di Mapillary, anche la foto più recente e i cartelli di limite riconosciuti nelle foto;
+- **Segnala un errore**: apre una nota su OpenStreetMap nel punto, così l'errore viene corretto per tutti.
+
+Le chiavi restano solo sul dispositivo e non entrano nei link condivisi.
+
 ## Aggiornare le regole dei permessi
 
 Le regole stanno in `js/permessi.js`, una scheda per comune, con la data dell'ultimo controllo. Non esiste un servizio pubblico con questi dati: vanno aggiornate a mano dai siti ufficiali dei comuni e degli enti che rilasciano i permessi. Il file spiega i campi in testa. Dopo una modifica, `node --test tests/core.test.js` controlla che ogni scheda sia completa.

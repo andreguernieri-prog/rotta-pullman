@@ -468,6 +468,90 @@
     return out;
   }
 
+  /* ------------------------------------------------------------------ */
+  /* Affidabilità del dato OSM                                           */
+  /* ------------------------------------------------------------------ */
+  const META_KEY = { altezza: 'maxheight', larghezza: 'maxwidth', lunghezza: 'maxlength', peso: 'maxweight', asse: 'maxaxleload', bus: 'bus', pesanti: 'hgv' };
+
+  /* data dell'ultima modifica, versione, fonte dichiarata e data di verifica di un elemento OSM */
+  function osmMeta(el, kind) {
+    const t = el.tags || {};
+    const key = META_KEY[kind] || '';
+    const date = t._d || (el.timestamp ? String(el.timestamp).slice(0, 10) : null);
+    return {
+      date,
+      version: Number(t._v || el.version) || null,
+      source: t['source:' + key] || t.source || null,
+      checked: t['check_date:' + key] || t.check_date || t['survey:date'] || null,
+      highway: t.highway || null,
+    };
+  }
+
+  const SOURCE_IT = {
+    sign: 'cartello stradale', survey: 'rilievo sul posto', local_knowledge: 'conoscenza locale', 'local knowledge': 'conoscenza locale',
+    estimate: 'stima', estimated: 'stima', bing: 'foto aeree', esri: 'foto aeree', 'aerial imagery': 'foto aeree', mapillary: 'foto Mapillary',
+    gps: 'traccia GPS', 'gps survey': 'rilievo GPS', streetlevel: 'foto stradali', 'street-level imagery': 'foto stradali',
+  };
+  function sourceLabel(src) {
+    if (!src) return null;
+    return String(src).split(';').map((x) => x.trim()).filter(Boolean)
+      .map((x) => SOURCE_IT[x.toLowerCase()] || (/^(bing|esri|mapbox)/i.test(x) ? 'foto aeree' : /mapillary/i.test(x) ? 'foto Mapillary' : x)).join(', ');
+  }
+
+  /* motivi per dubitare del dato: valore insolito per il tipo di strada, dato molto vecchio */
+  function hazardDoubts(hz, nowMs) {
+    const out = [];
+    const m = hz.meta || {};
+    const main = /^(motorway|trunk|primary|secondary)(_link)?$/.test(m.highway || '');
+    const v = hz.value;
+    if (main && typeof v === 'number') {
+      if (hz.kind === 'altezza' && v < 2.5) out.push('Altezza molto bassa per una strada principale: potrebbe essere un errore di mappatura.');
+      if (hz.kind === 'larghezza' && v < 2.1) out.push('Larghezza molto ridotta per una strada principale: potrebbe essere un errore di mappatura.');
+      if (hz.kind === 'peso' && v < 3.5) out.push('Limite di peso molto basso per una strada principale: potrebbe essere un errore di mappatura.');
+    }
+    const ref = Date.parse(m.checked || m.date || '');
+    if (isFinite(ref)) {
+      const years = Math.floor(((nowMs || Date.now()) - ref) / (365.25 * 864e5));
+      if (years >= 8) out.push(`Dato non aggiornato da ${years} anni.`);
+    }
+    return out;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Confronto con un secondo servizio (TomTom)                          */
+  /* ------------------------------------------------------------------ */
+  /*
+   * Il secondo servizio calcola lo stesso viaggio due volte: con le dimensioni del mezzo (bus)
+   * e come auto (car). Dove il nostro percorso coincide con quello in auto ma il mezzo viene
+   * fatto passare altrove, il secondo servizio conosce probabilmente un limite.
+   */
+  function compareRoutes(route, busCoords, carCoords) {
+    const idx = route.index;
+    const busIdx = new RouteIndex(busCoords), carIdx = new RouteIndex(carCoords);
+    const STEP = 50, NEAR = 40;
+    const samples = [];
+    for (let s = 0; s <= idx.total; s += STEP) {
+      const p = idx.pointAt(s);
+      samples.push({ along: s, bus: !!busIdx.nearest(p[0], p[1], NEAR), car: !!carIdx.nearest(p[0], p[1], NEAR) });
+    }
+    const runs = [];
+    let cur = null;
+    for (const sm of samples) {
+      if (!(sm.car && !sm.bus)) continue;
+      if (cur && sm.along - cur.alongEnd <= 150) cur.alongEnd = sm.along;
+      else { cur = { alongStart: sm.along, alongEnd: sm.along }; runs.push(cur); }
+    }
+    const avoided = runs.filter((r) => r.alongEnd - r.alongStart >= 200);
+    const shared = samples.length ? samples.filter((x) => x.bus).length / samples.length : 0;
+    function verdict(a0, a1) {
+      if (avoided.some((r) => r.alongStart <= a1 + 100 && r.alongEnd >= a0 - 100)) return 'evita';
+      const win = samples.filter((x) => x.along >= a0 - 100 && x.along <= a1 + 100);
+      if (win.length && win.every((x) => x.bus)) return 'passa';
+      return 'altrove';
+    }
+    return { avoided, shared, verdict };
+  }
+
   /* Cosa fare davanti a un punto critico, in parole semplici */
   function hazardAdvice(hz) {
     if (hz.crossing) return 'Il limite è scritto sul ponte che passa sopra il percorso: di solito riguarda chi passa sotto, non chi passa sopra. Guarda il cartello con Street View prima di partire.';
@@ -486,6 +570,8 @@
         return 'Il cartello vieta il transito al tuo mezzo. ' + evita + ' Se pensi che il dato sia sbagliato, verifica con Street View.';
       case 'bus':
         return 'Divieto di transito per gli autobus. ' + evita;
+      case 'tomtom':
+        return 'TomTom, che raccoglie i limiti con veicoli propri, evita questo tratto con le dimensioni del tuo mezzo ma lo percorre con un\'auto: probabilmente c\'è un limite che OpenStreetMap non riporta (ponte basso, strettoia, divieto). Controlla con Street View; se è confermato, ' + evita.charAt(0).toLowerCase() + evita.slice(1);
       case 'pesanti':
         return 'Su OpenStreetMap questo divieto si usa di solito per il cartello con il camion, che vale per i veicoli che trasportano merci e non per gli autobus. Se sul cartello c\'è solo il camion, il bus può passare; se c\'è un limite di peso o il simbolo dell\'autobus, no. Controlla il cartello con Street View.';
       default:
@@ -572,7 +658,7 @@
       if (rel.onRoute) {
         checked++;
         for (const is of issues) raw.push(Object.assign({}, is, {
-          ids: [el.type + '/' + el.id], name: tags.name || tags.ref || '',
+          ids: [el.type + '/' + el.id], name: tags.name || tags.ref || '', meta: osmMeta(el, is.kind),
           alongStart: rel.alongStart, alongEnd: rel.alongEnd,
           lat: rel.point ? rel.point[0] : idx.pointAt(rel.alongStart)[0],
           lon: rel.point ? rel.point[1] : idx.pointAt(rel.alongStart)[1],
@@ -583,7 +669,7 @@
           if (is.kind !== 'altezza') continue;
           raw.push(Object.assign({}, is, {
             severity: 'amber', detail: 'Limite indicato sul ponte che attraversa il percorso: verifica',
-            ids: [el.type + '/' + el.id], name: tags.name || tags.ref || '',
+            ids: [el.type + '/' + el.id], name: tags.name || tags.ref || '', meta: osmMeta(el, is.kind),
             alongStart: rel.alongStart, alongEnd: rel.alongEnd, lat: null, lon: null, crossing: true,
           }));
         }
@@ -970,7 +1056,7 @@
     PRESETS, LIMITS, RULES, sanitizeVehicle,
     haversine, bearing, decodePolyline, encodePolyline, simplify, RouteIndex,
     buildCumTime, splitByDistance, normalizeValhalla, normalizeOrs, finishRoute, timeAtAlong, alongAtTime,
-    parseLength, parseWeight, evaluateTags, hazardAdvice, hasRestrictionTags, wayRelation, analyzeElements,
+    parseLength, parseWeight, evaluateTags, hazardAdvice, hasRestrictionTags, osmMeta, sourceLabel, hazardDoubts, compareRoutes, wayRelation, analyzeElements,
     planTrip, fmtDur, fmtDist, fmtClock, fmtNum, stopLetter, parseCoords,
     buildGpx, encodeShare, decodeShare, normName, matchPermit, groupPermits,
     tileKey, tilesAround, tilesForCoords, pointInRings, coordsCovered, tileToElements,

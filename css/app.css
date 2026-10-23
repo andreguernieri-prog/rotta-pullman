@@ -336,6 +336,14 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 .hz-title { font-weight: 700; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .hz-meta { color: var(--muted); font-size: 13.5px; }
 .hz-advice { font-size: 13.5px; margin-top: 2px; }
+.hz-doubt { display: block; color: var(--amber); font-size: 13px; font-weight: 600; }
+.tt-verdict { display: block; font-size: 13px; font-weight: 600; color: var(--muted); }
+.tt-verdict.passa { color: var(--ok); }
+.tt-verdict.evita { color: var(--red); }
+.tt-verdict.passa.conflitto { color: var(--amber); }
+.hzpop-trust { display: flex; flex-direction: column; gap: 3px; font-size: 13px; }
+.hzpop-photo { display: flex; flex-direction: column; gap: 4px; }
+.hzpop-photo img { display: block; width: 100%; max-width: 256px; height: auto; border-radius: 8px; border: 1px solid var(--line); }
 .hz-popup .leaflet-popup-content { margin: 12px 14px; }
 .hzpop { display: flex; flex-direction: column; gap: 8px; font-size: 13.5px; }
 .hzpop p { margin: 0; }

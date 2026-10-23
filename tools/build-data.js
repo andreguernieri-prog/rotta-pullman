@@ -25,7 +25,9 @@ const RIQUADRO = 0.25;
 
 const RESTR_KEYS = ['maxheight', 'maxheight:physical', 'maxwidth', 'maxwidth:physical', 'maxlength', 'maxweight', 'maxweightrating', 'maxaxleload'];
 const ACCESS_KEYS = ['hgv', 'bus', 'tourist_bus', 'coach'];
-const KEEP_R = RESTR_KEYS.concat(ACCESS_KEYS, ['psv', 'name', 'ref', 'bridge']);
+const KEEP_R = RESTR_KEYS.concat(ACCESS_KEYS, ['psv', 'name', 'ref', 'bridge', 'highway',
+  'source', 'source:maxheight', 'source:maxweight', 'source:maxwidth', 'source:maxlength', 'source:hgv',
+  'check_date', 'check_date:maxheight', 'check_date:maxweight', 'survey:date']);
 const KEEP_P = ['name', 'fee', 'capacity:bus', 'capacity:coach', 'access', 'opening_hours', 'bus', 'coach', 'tourist_bus', 'hgv', 'parking'];
 const NON_ROAD = ['amenity', 'shop', 'building', 'tourism', 'leisure', 'man_made', 'office', 'craft'];
 
@@ -56,6 +58,13 @@ function pick(t, keys) {
 }
 
 const r5 = (x) => Math.round(x * 1e5) / 1e5;
+
+/* osmium esporta la data come secondi dal 1970 (0 se manca); si accetta anche il testo ISO */
+function isoDay(ts) {
+  if (!ts) return null;
+  const d = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts);
+  return isFinite(d) ? d.toISOString().slice(0, 10) : null;
+}
 
 /* linea principale di una geometria GeoJSON, come [[lat, lon], ...] */
 function lineOf(g) {
@@ -136,7 +145,12 @@ function createBuilder() {
     let pts = lineOf(feature.geometry);
     if (!pts || !pts.length) return;
     if (pts.length > 2) pts = C.simplify(pts, 2);
-    const rec = [ref, C.encodePolyline(pts, 5), pick(t, KEEP_R)];
+    const tags = pick(t, KEEP_R);
+    // data dell'ultima modifica e versione (da osmium export -a timestamp,version)
+    const d = isoDay(pr['@timestamp']);
+    if (d) tags._d = d;
+    if (pr['@version']) tags._v = String(pr['@version']);
+    const rec = [ref, C.encodePolyline(pts, 5), tags];
     for (const k of tilesOfBox(pts)) get(k).r.push(rec);
     stats.limiti++;
   }
@@ -225,4 +239,4 @@ if (require.main === module) {
   main(process.argv).catch((e) => { console.error(e); process.exit(1); });
 }
 
-module.exports = { createBuilder, parsePoly, relevantRestriction, isBusParking, RIQUADRO, VERSIONE };
+module.exports = { createBuilder, parsePoly, relevantRestriction, isBusParking, isoDay, RIQUADRO, VERSIONE };

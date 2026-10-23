@@ -280,3 +280,48 @@ test('consigli per i punti critici', () => {
   assert.match(C.hazardAdvice({ kind: 'altezza', severity: 'amber', value: 3.6, crossing: true }), /ponte/);
   for (const kind of ['larghezza', 'lunghezza', 'peso', 'asse', 'bus', 'altro']) assert.ok(C.hazardAdvice({ kind, severity: 'red' }).length > 20, kind);
 });
+
+test('affidabilità del dato: fonte, data, valori insoliti', () => {
+  const el = { type: 'way', id: 1, timestamp: '2014-05-02T10:00:00Z', version: 3, tags: { highway: 'primary', maxheight: '2.1', 'source:maxheight': 'sign' } };
+  const m = C.osmMeta(el, 'altezza');
+  assert.deepEqual(m, { date: '2014-05-02', version: 3, source: 'sign', checked: null, highway: 'primary' });
+  assert.equal(C.sourceLabel('sign'), 'cartello stradale');
+  assert.equal(C.sourceLabel('Bing;survey'), 'foto aeree, rilievo sul posto');
+  assert.equal(C.sourceLabel(null), null);
+  const d = C.hazardDoubts({ kind: 'altezza', value: 2.1, meta: m }, Date.parse('2026-10-23'));
+  assert.equal(d.length, 2);
+  assert.match(d[0], /strada principale/);
+  assert.match(d[1], /12 anni/);
+  assert.equal(C.hazardDoubts({ kind: 'altezza', value: 3.9, meta: { highway: 'primary', date: '2025-01-01' } }, Date.parse('2026-10-23')).length, 0);
+  // i dati scaricati portano la data nei tag (_d, _v)
+  assert.equal(C.osmMeta({ tags: { _d: '2021-03-04', _v: '7', hgv: 'no', check_date: '2024-06-01' } }, 'pesanti').checked, '2024-06-01');
+});
+
+test('analisi: i punti critici portano i metadati OSM', () => {
+  const route = straightRoute();
+  const idx = new C.RouteIndex(route);
+  const els = [{ type: 'way', id: 5, timestamp: '2020-01-01T00:00:00Z', version: 2, tags: { highway: 'tertiary', maxheight: '3.4' }, geometry: [{ lat: 45.02, lon: 9 }, { lat: 45.021, lon: 9 }] }];
+  const a = C.analyzeElements(els, idx, veh);
+  assert.equal(a.hazards[0].meta.date, '2020-01-01');
+  assert.equal(a.hazards[0].meta.version, 2);
+});
+
+test('confronto con TomTom: tratti evitati e conferme', () => {
+  const route = C.finishRoute({ coords: straightRoute(45, 9, 200, 0.0005), steps: [], legEnds: [0, 199], durationS: 600, flags: {}, engine: 'x' });
+  const car = straightRoute(45, 9, 200, 0.0005);
+  // il bus devia di ~800 m tra il 40% e il 60% del percorso
+  const bus = car.map((p, i) => (i >= 80 && i <= 120 ? [p[0], p[1] + 0.01] : p));
+  const cmp = C.compareRoutes(route, bus, car);
+  assert.equal(cmp.avoided.length, 1);
+  const r = cmp.avoided[0];
+  assert.ok(r.alongStart > 0.38 * route.distanceM && r.alongEnd < 0.62 * route.distanceM, JSON.stringify(r));
+  assert.equal(cmp.verdict(0.5 * route.distanceM, 0.5 * route.distanceM), 'evita');
+  assert.equal(cmp.verdict(0.1 * route.distanceM, 0.1 * route.distanceM), 'passa');
+  assert.ok(cmp.shared > 0.7 && cmp.shared < 0.85);
+  // se anche l'auto va altrove, il confronto non dice nulla
+  const carAway = car.map((p, i) => (i >= 80 && i <= 120 ? [p[0], p[1] - 0.01] : p));
+  const cmp2 = C.compareRoutes(route, bus, carAway);
+  assert.equal(cmp2.avoided.length, 0);
+  assert.equal(cmp2.verdict(0.5 * route.distanceM, 0.5 * route.distanceM), 'altrove');
+  assert.match(C.hazardAdvice({ kind: 'tomtom', severity: 'amber' }), /TomTom/);
+});

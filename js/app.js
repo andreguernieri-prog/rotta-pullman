@@ -65,7 +65,7 @@
     presetId: saved.presetId || 'p:gt13',
     margin: saved.margin != null ? Number(saved.margin) : 0.1,
     breakMode: saved.breakMode || 'legge',
-    options: Object.assign({ engine: 'valhalla', orsKey: '', avoidTolls: false, avoidHighways: false, avoidFerries: true, strictHgv: true, vmax: 100 }, saved.options || {}),
+    options: Object.assign({ engine: 'valhalla', orsKey: '', tomtomKey: '', mapillaryToken: '', avoidTolls: false, avoidHighways: false, avoidFerries: true, strictHgv: true, vmax: 100 }, saved.options || {}),
     stops: (saved.stops && saved.stops.length >= 2 ? saved.stops : EXAMPLE).map(mkStop),
     isExample: saved.stops ? !!saved.example : true,
     departure: validDeparture(saved.departure),
@@ -151,8 +151,11 @@
     return `<svg viewBox="0 0 100 100" role="img" aria-hidden="true">${ring}${inner}</svg>`;
   }
 
+  const DANGER_SVG = '<svg viewBox="0 0 100 100" role="img" aria-hidden="true"><path d="M50 8 94 88H6z" fill="#fff" stroke="#c8102e" stroke-width="10" stroke-linejoin="round"/><path d="M50 36v26" stroke="#111" stroke-width="9" stroke-linecap="round"/><circle cx="50" cy="74" r="5.5" fill="#111"/></svg>';
+
   function hazardSign(hz) {
     const v = hz.value;
+    if (hz.kind === 'tomtom') return DANGER_SVG;
     switch (hz.kind) {
       case 'altezza': return signSVG('altezza', v != null ? dec1(v) : '?');
       case 'larghezza': return signSVG('larghezza', dec1(v));
@@ -769,6 +772,8 @@
     $('#opt-vmax').value = String(o.vmax);
     $('#opt-engine').value = o.engine;
     $('#opt-orskey').value = o.orsKey || '';
+    $('#opt-tomtomkey').value = o.tomtomKey || '';
+    $('#opt-mapillary').value = o.mapillaryToken || '';
     $('#ors-key-field').hidden = o.engine !== 'ors';
   }
   $('#in-departure').addEventListener('change', (e) => {
@@ -788,6 +793,8 @@
   optBind('#opt-vmax', 'vmax', (t) => Number(t.value));
   optBind('#opt-engine', 'engine', (t) => t.value);
   $('#opt-orskey').addEventListener('change', (e) => { state.options.orsKey = e.target.value.trim(); persist(); markStale(); });
+  $('#opt-tomtomkey').addEventListener('change', (e) => { state.options.tomtomKey = e.target.value.trim(); persist(); markStale(); });
+  $('#opt-mapillary').addEventListener('change', (e) => { state.options.mapillaryToken = e.target.value.trim(); persist(); mapillaryCache.clear(); });
 
   function markStale() {
     if (!state.route) return;
@@ -853,10 +860,12 @@
       r.stopIdx = valid.map((s) => state.stops.indexOf(s));
       r.vehicle = veh;
       r.margin = state.margin;
+      r.options = opt;
       state.route = r;
       state.analysis = { status: 'loading' };
       state.parkings = { status: 'loading' };
       state.permits = { status: 'loading' };
+      state.tomtom = state.options.tomtomKey ? { status: 'loading' } : null;
       state.stale = false;
       $('#stale').hidden = true;
       drawRoute();
@@ -868,6 +877,7 @@
       runParkings(my, signal); // richiesta breve: entra per prima nella coda di Overpass
       runAnalysis(my, signal);
       runPermits(my, signal);
+      runTomTom(my, signal);
     } catch (e) {
       if (my !== seq || e.code === 'aborted') return;
       showError(e.message || 'Errore inatteso durante il calcolo.');
@@ -1051,9 +1061,9 @@
   function drawHazards() {
     lg.hazards.clearLayers();
     const a = state.analysis;
-    if (!a || !a.hazards) return;
+    if ((!a || !a.hazards) && !(state.tomtom && state.tomtom.status === 'done')) return;
     hazardMarkers.clear();
-    for (const hz of a.hazards) {
+    for (const hz of allHazards()) {
       const icon = L.divIcon({ className: '', html: `<div class="hz-marker ${hz.severity}">${hazardSign(hz)}</div>`, iconSize: [30, 30], iconAnchor: [15, 15] });
       const mk = L.marker([hz.lat, hz.lon], { icon, zIndexOffset: hz.severity === 'red' ? 600 : 500, title: hz.title })
         .on('click', () => openHazardPopup(hz))
@@ -1083,24 +1093,88 @@
 
   function hazardWhereShort(hz) {
     const eta = clockAtAlong(hz.alongStart);
-    return [hz.name || 'strada senza nome', hazardKm(hz), eta ? 'verso le ' + C.fmtClock(eta, depMs()) : ''].filter(Boolean).join(' · ');
+    return [hz.name || (hz.kind === 'tomtom' ? 'strada non indicata' : 'strada senza nome'), hazardKm(hz), eta ? 'verso le ' + C.fmtClock(eta, depMs()) : ''].filter(Boolean).join(' · ');
   }
 
   function streetViewUrl(hz) {
     return `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${hz.lat.toFixed(6)},${hz.lon.toFixed(6)}`;
   }
 
+  const TT_VERDICT = {
+    passa: 'TomTom percorre questo tratto con le dimensioni del tuo mezzo.',
+    evita: 'Anche TomTom evita questo tratto con il tuo mezzo: il limite è probabilmente reale.',
+    altrove: 'TomTom fa passare sia il bus sia l\'auto da un\'altra strada: qui non si può confrontare.',
+  };
+  /* giudizio di TomTom, con l'avviso quando contraddice un limite "non transitabile" */
+  function ttText(hz) {
+    if (hz.tomtom === 'passa' && hz.severity === 'red') return 'TomTom invece percorre questo tratto con le dimensioni del tuo mezzo: i due dati non concordano, verifica con Street View o con le foto Mapillary.';
+    return TT_VERDICT[hz.tomtom];
+  }
+  const mapillaryCache = new Map();
+  const SIGN_IT = [[/height/i, 'altezza massima'], [/weight/i, 'peso massimo'], [/width/i, 'larghezza massima'], [/length/i, 'lunghezza massima'],
+    [/axle/i, 'carico per asse'], [/bus/i, 'divieto per bus'], [/heavy|truck|goods/i, 'divieto per mezzi pesanti']];
+
+  function fmtDay(iso) {
+    const d = new Date(iso);
+    return isFinite(d) ? d.toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' }) : '';
+  }
+
+  /* data, versione e fonte del dato OSM, più i motivi di dubbio */
+  function hazardTrust(hz) {
+    const m = hz.meta;
+    if (!m) return null;
+    const parts = [];
+    if (m.date) parts.push('modificato il ' + fmtDay(m.date) + (m.version ? ` (versione ${m.version})` : ''));
+    const src = C.sourceLabel(m.source);
+    parts.push(src ? 'fonte: ' + src : 'fonte non indicata');
+    if (m.checked) parts.push('verificato il ' + fmtDay(m.checked));
+    const box = h('div', { class: 'hzpop-trust' }, h('span', null, h('b', { text: 'Dato OpenStreetMap: ' }), parts.join(' · ') + '.'));
+    for (const d of C.hazardDoubts(hz)) box.append(h('span', { class: 'hz-doubt', text: d }));
+    return box;
+  }
+
+  /* foto Mapillary del punto (con token) o collegamento al visore (senza) */
+  function mapillaryBlock(hz) {
+    const token = state.options.mapillaryToken;
+    const viewer = `https://www.mapillary.com/app/?lat=${hz.lat.toFixed(6)}&lng=${hz.lon.toFixed(6)}&z=18`;
+    if (!token) return null;
+    const box = h('div', { class: 'hzpop-photo' }, h('span', { class: 'hz-meta', text: 'Cerco una foto del punto su Mapillary…' }));
+    const key = hz.lat.toFixed(5) + ',' + hz.lon.toFixed(5);
+    const show = (res) => {
+      box.replaceChildren();
+      if (!res) { box.append(h('span', { class: 'hz-meta', text: 'Nessuna foto Mapillary disponibile qui.' })); return; }
+      if (res.image && res.image.thumb_256_url) {
+        box.append(h('a', { href: `https://www.mapillary.com/app/?pKey=${encodeURIComponent(res.image.id)}&focus=photo`, target: '_blank', rel: 'noopener' },
+          h('img', { src: res.image.thumb_256_url, alt: 'Foto stradale del punto (Mapillary)', loading: 'lazy' })));
+        if (res.image.captured_at) box.append(h('span', { class: 'hz-meta', text: 'Foto del ' + fmtDay(res.image.captured_at) + ' · Mapillary' }));
+      } else box.append(h('a', { href: viewer, target: '_blank', rel: 'noopener' }, 'Nessuna foto qui: apri la mappa Mapillary'));
+      const names = Array.from(new Set(res.signs.map((f) => { const m = SIGN_IT.find(([re]) => re.test(f.object_value)); return m ? m[1] : null; }).filter(Boolean)));
+      box.append(h('span', { class: names.length ? 'tt-verdict passa' : 'hz-meta', text: names.length ? 'Cartelli rilevati nelle foto Mapillary: ' + names.join(', ') + '.' : 'Nelle foto Mapillary non risultano cartelli di limite in questo punto.' }));
+      const img = box.querySelector('img');
+      if (img) img.addEventListener('load', refreshPopup, { once: true });
+      refreshPopup();
+    };
+    if (mapillaryCache.has(key)) show(mapillaryCache.get(key));
+    else {
+      API.mapillaryNear(hz.lat, hz.lon, token)
+        .then((res) => { const v = res.image || res.signs.length ? res : null; mapillaryCache.set(key, v); show(v); })
+        .catch((e) => { box.replaceChildren(h('span', { class: 'hz-meta', text: e.message || 'Mapillary non disponibile.' })); });
+    }
+    return box;
+  }
+
   function hazardCard(hz) {
     const span = hz.alongEnd - hz.alongStart;
     const eta = clockAtAlong(hz.alongStart);
     const osm = hz.ids[0].split('/');
+    const isOsm = !hz.ids[0].startsWith('tomtom/');
     const near = h('dd', { text: placeNames.get(hz.ids[0]) || 'ricerca…' });
     if (!placeNames.has(hz.ids[0])) {
       API.reverse(hz.lat, hz.lon)
-        .then((label) => { placeNames.set(hz.ids[0], label || 'non disponibile'); near.textContent = label || 'non disponibile'; })
+        .then((label) => { placeNames.set(hz.ids[0], label || 'non disponibile'); near.textContent = label || 'non disponibile'; refreshPopup(); })
         .catch(() => { near.textContent = 'non disponibile'; });
     }
-    const rows = [['Strada', hz.name || 'senza nome'], ['Posizione', hazardKm(hz) + ' dalla partenza'], ['Vicino a', near]];
+    const rows = [['Strada', hz.name || (isOsm ? 'senza nome' : 'non indicata')], ['Posizione', hazardKm(hz) + ' dalla partenza'], ['Vicino a', near]];
     if (eta) rows.push(['Ci arrivi', 'verso le ' + C.fmtClock(eta, depMs())]);
     if (span > 150) rows.push(['Tratto', C.fmtDist(span)]);
     return h('div', { class: 'hzpop' },
@@ -1109,10 +1183,16 @@
         h('span', null, h('b', { text: hz.title }), h('span', { class: `sev sev-${hz.severity}-bg`, text: hz.severity === 'red' ? 'Non transitabile' : 'Da verificare' }))),
       h('p', { text: hz.detail }),
       h('dl', null, rows.flatMap(([k, v]) => [h('dt', { text: k }), v.nodeType ? v : h('dd', { text: v })])),
+      hazardTrust(hz),
+      hz.tomtom && hz.kind !== 'tomtom' ? h('p', { class: 'tt-verdict ' + hz.tomtom + (hz.severity === 'red' && hz.tomtom === 'passa' ? ' conflitto' : ''), text: ttText(hz) }) : null,
+      !state.tomtom && isOsm ? h('p', { class: 'hz-meta', text: 'Per una seconda verifica con TomTom aggiungi la chiave nelle preferenze di percorso.' }) : null,
+      mapillaryBlock(hz),
       h('p', { class: 'hzpop-advice' }, h('b', { text: 'Cosa fare: ' }), C.hazardAdvice(hz)),
       h('div', { class: 'hz-links' },
         h('a', { href: streetViewUrl(hz), target: '_blank', rel: 'noopener' }, 'Street View'),
-        h('a', { href: `https://www.openstreetmap.org/${osm[0]}/${osm[1]}`, target: '_blank', rel: 'noopener' }, 'Dati OSM')));
+        h('a', { href: `https://www.mapillary.com/app/?lat=${hz.lat.toFixed(6)}&lng=${hz.lon.toFixed(6)}&z=18`, target: '_blank', rel: 'noopener' }, 'Foto Mapillary'),
+        h('a', { href: `https://www.openstreetmap.org/note/new#map=19/${hz.lat.toFixed(6)}/${hz.lon.toFixed(6)}`, target: '_blank', rel: 'noopener' }, isOsm ? 'Segnala un errore' : 'Segnala il limite su OSM'),
+        isOsm ? h('a', { href: `https://www.openstreetmap.org/${osm[0]}/${osm[1]}`, target: '_blank', rel: 'noopener' }, 'Dati OSM') : null));
   }
 
   function openHazardPopup(hz) {
@@ -1121,8 +1201,17 @@
     const el = mk && mk.getElement();
     if (el && el.firstChild) el.firstChild.classList.add('focus');
     const pad = mapPadding();
-    L.popup({ maxWidth: 300, minWidth: 230, className: 'hz-popup', offset: [0, -12], autoPanPaddingTopLeft: pad.paddingTopLeft, autoPanPaddingBottomRight: pad.paddingBottomRight })
+    // la scheda non supera lo spazio visibile della mappa: se serve, scorre al suo interno
+    const bottom = isWide() ? window.innerHeight : panel.getBoundingClientRect().top;
+    const maxHeight = Math.max(220, bottom - pad.paddingTopLeft[1] - 40);
+    hzPopup = L.popup({ maxWidth: 300, minWidth: 230, maxHeight, className: 'hz-popup', offset: [0, -12], autoPanPaddingTopLeft: pad.paddingTopLeft, autoPanPaddingBottomRight: pad.paddingBottomRight })
       .setLatLng([hz.lat, hz.lon]).setContent(hazardCard(hz)).openOn(map);
+  }
+
+  /* dopo un aggiornamento del contenuto (località, foto) la scheda si riposiziona */
+  let hzPopup = null;
+  function refreshPopup() {
+    if (hzPopup && hzPopup.isOpen()) hzPopup.update();
   }
 
   /* porta la mappa sul punto e apre la scheda */
@@ -1179,10 +1268,59 @@
   /* ------------------------------------------------------------------ */
   /* Pannello dei risultati                                              */
   /* ------------------------------------------------------------------ */
+  /* punti di OpenStreetMap, con il giudizio di TomTom, più i tratti evitati solo da TomTom */
+  function allHazards() {
+    const a = state.analysis;
+    const base = (a && a.hazards) || [];
+    const tt = state.tomtom && state.tomtom.status === 'done' ? state.tomtom.cmp : null;
+    if (!tt) return base;
+    const out = base.map((hz) => Object.assign({}, hz, { tomtom: tt.verdict(hz.alongStart, hz.alongEnd) }));
+    tt.avoided.forEach((run, i) => {
+      if (base.some((hz) => hz.alongStart <= run.alongEnd + 150 && hz.alongEnd >= run.alongStart - 150)) return; // già tra i punti OSM
+      const pt = state.route.index.pointAt(Math.min(run.alongEnd, run.alongStart + 50));
+      out.push({
+        kind: 'tomtom', severity: 'amber', value: null, title: 'Tratto evitato da TomTom',
+        detail: 'Con le dimensioni del tuo mezzo TomTom passa da un\'altra strada; con un\'auto percorre questo tratto.',
+        ids: ['tomtom/' + (i + 1)], name: '', alongStart: run.alongStart, alongEnd: run.alongEnd, lat: pt[0], lon: pt[1], tomtom: 'evita', meta: null,
+      });
+    });
+    out.sort((x, y) => (x.severity === y.severity ? x.alongStart - y.alongStart : x.severity === 'red' ? -1 : 1));
+    return out;
+  }
+
   function hazardCounts() {
     const a = state.analysis;
-    if (!a || !a.hazards) return null;
-    return { red: a.hazards.filter((x) => x.severity === 'red').length, amber: a.hazards.filter((x) => x.severity === 'amber').length };
+    const ttDone = state.tomtom && state.tomtom.status === 'done';
+    if ((!a || !a.hazards) && !ttDone) return null;
+    const list = allHazards();
+    return { red: list.filter((x) => x.severity === 'red').length, amber: list.filter((x) => x.severity === 'amber').length };
+  }
+
+  async function runTomTom(my, signal) {
+    const r = state.route;
+    const key = r.options && r.options.tomtomKey;
+    if (!key) { state.tomtom = null; return; }
+    try {
+      const [bus, car] = await Promise.all([
+        API.tomtomRoute(r.stops, r.vehicle, r.margin, r.options, key, 'bus', signal),
+        API.tomtomRoute(r.stops, r.vehicle, r.margin, r.options, key, 'car', signal),
+      ]);
+      if (my !== seq) return;
+      state.tomtom = { status: 'done', cmp: C.compareRoutes(r, bus, car) };
+    } catch (e) {
+      if (my !== seq || e.code === 'aborted') return;
+      state.tomtom = { status: 'error', reason: e.message };
+    }
+    drawHazards(); renderCheck(); renderHazards(); renderMini();
+  }
+
+  function tomtomNote() {
+    const t = state.tomtom;
+    if (!t) return null;
+    if (t.status === 'loading') return 'Seconda verifica con TomTom in corso…';
+    if (t.status === 'error') return 'Seconda verifica con TomTom non riuscita: ' + t.reason;
+    const n = t.cmp.avoided.length, pct = Math.round(t.cmp.shared * 100);
+    return `Seconda verifica con TomTom: ${n ? plural(n, 'tratto evitato', 'tratti evitati') : 'nessun tratto evitato'} con le dimensioni del tuo mezzo (percorso in comune al ${pct}%).`;
   }
 
   function renderResult() {
@@ -1240,17 +1378,18 @@
     return { text, old: ageDays > 21 ? `I dati scaricati hanno ${Math.floor(ageDays)} giorni: l'aggiornamento settimanale potrebbe essersi fermato.` : null };
   }
 
-  function checkPoints(a) {
+  function checkPoints() {
+    const list = allHazards();
     const ul = h('ul', { class: 'check-pts' });
-    for (const hz of a.hazards.slice(0, 3)) {
+    for (const hz of list.slice(0, 3)) {
       ul.append(h('li', null, h('button', { type: 'button', class: 'check-pt', onclick: () => focusHazard(hz) },
         h('span', { class: 'check-pt-sign', svg: hazardSign(hz) }),
         h('span', { class: 'check-pt-text' }, h('b', { text: hz.title }), h('span', { text: hazardWhereShort(hz) })),
         h('span', { class: 'check-pt-go', text: 'Mappa ›' }))));
     }
-    if (a.hazards.length > 3) {
+    if (list.length > 3) {
       ul.append(h('li', null, h('button', { type: 'button', class: 'btn-ghost', onclick: () => $('#hazards').closest('.res-sec').scrollIntoView({ behavior: 'smooth', block: 'start' }) },
-        `Vedi tutti i ${a.hazards.length} punti`)));
+        `Vedi tutti i ${list.length} punti`)));
     }
     return ul;
   }
@@ -1278,12 +1417,12 @@
         box.classList.add('red');
         body.append(h('b', { text: `${plural(c.red, 'punto non transitabile', 'punti non transitabili')} per questo mezzo` }),
           'Secondo OpenStreetMap ci sono limiti incompatibili sul percorso. Tocca un punto per vederlo sulla mappa e sapere cosa fare.');
-        body.append(checkPoints(a));
+        body.append(checkPoints());
       } else if (c.amber) {
         box.classList.add('amber');
         body.append(h('b', { text: plural(c.amber, 'punto da verificare', 'punti da verificare') }),
           'Nessun limite incompatibile, ma ci sono passaggi con margini stretti o divieti da controllare sul cartello. Tocca un punto per vederlo sulla mappa.');
-        body.append(checkPoints(a));
+        body.append(checkPoints());
       } else if (a.status === 'done') {
         box.classList.add('ok');
         body.append(h('b', { text: 'Nessun limite incompatibile trovato' }),
@@ -1309,6 +1448,8 @@
         body.append(h('br'), h('button', { type: 'button', class: 'btn-ghost', onclick: () => { state.analysis = null; retryAnalysis(); } }, 'Riprova il controllo'));
       }
     }
+    const ttn = tomtomNote();
+    if (ttn) body.append(h('span', { class: 'so-far src', text: ttn }));
     box.append(body);
   }
 
@@ -1468,31 +1609,36 @@
     cnt.textContent = '';
     const a = state.analysis;
     const loading = !a || a.status === 'loading';
-    if (!a || !a.hazards) { ul.append(h('li', { class: 'none' }, loading ? 'Controllo in corso…' : 'Elenco non disponibile.')); return; }
-    if (!a.hazards.length) {
+    const list = allHazards();
+    if ((!a || !a.hazards) && !list.length) { ul.append(h('li', { class: 'none' }, loading ? 'Controllo in corso…' : 'Elenco non disponibile.')); return; }
+    if (!list.length) {
       ul.append(h('li', { class: 'none' }, loading ? 'Nessun punto critico finora, il controllo continua…'
         : a.status === 'partial' ? 'Nessun punto critico nei tratti controllati.'
           : 'Nessun punto critico per questo mezzo nei dati di OpenStreetMap.'));
       return;
     }
-    cnt.textContent = String(a.hazards.length);
-    for (const hz of a.hazards) {
+    cnt.textContent = String(list.length);
+    for (const hz of list) {
       const km = hz.alongStart / 1000;
       const span = hz.alongEnd - hz.alongStart;
       const eta = clockAtAlong(hz.alongStart);
       const meta = [hz.name, `km ${C.fmtNum(km, km < 10 ? 1 : 0)}`, eta ? 'verso le ' + C.fmtClock(eta, depMs()) : '', span > 150 ? `tratto di ${C.fmtDist(span)}` : ''].filter(Boolean).join(' · ');
+      const isOsm = !hz.ids[0].startsWith('tomtom/');
       const osm = hz.ids[0].split('/');
+      const doubts = C.hazardDoubts(hz);
       ul.append(h('li', { class: 'hz' },
         h('span', { svg: hazardSign(hz) }),
         h('div', { class: 'hz-body' },
           h('span', { class: 'hz-title' }, hz.title, h('span', { class: `sev sev-${hz.severity}-bg`, text: hz.severity === 'red' ? 'Non transitabile' : 'Da verificare' })),
           h('span', { text: hz.detail }),
           h('span', { class: 'hz-meta', text: meta }),
+          hz.tomtom && hz.kind !== 'tomtom' ? h('span', { class: 'tt-verdict ' + hz.tomtom + (hz.severity === 'red' && hz.tomtom === 'passa' ? ' conflitto' : ''), text: ttText(hz) }) : null,
+          doubts.length ? h('span', { class: 'hz-doubt', text: doubts.join(' ') }) : null,
           h('span', { class: 'hz-advice' }, h('b', { text: 'Cosa fare: ' }), C.hazardAdvice(hz)),
           h('span', { class: 'hz-links' },
             h('button', { type: 'button', onclick: () => focusHazard(hz) }, 'Mostra sulla mappa'),
             h('a', { href: streetViewUrl(hz), target: '_blank', rel: 'noopener' }, 'Street View'),
-            h('a', { href: `https://www.openstreetmap.org/${osm[0]}/${osm[1]}`, target: '_blank', rel: 'noopener' }, 'Dati OSM')))));
+            isOsm ? h('a', { href: `https://www.openstreetmap.org/${osm[0]}/${osm[1]}`, target: '_blank', rel: 'noopener' }, 'Dati OSM') : null))));
     }
     if (loading) ul.append(h('li', { class: 'none' }, 'Controllo degli altri tratti in corso…'));
   }
@@ -1571,7 +1717,7 @@
     const wps = r.stops.map((s, i) => ({ lat: s.lat, lon: s.lon, name: `${C.stopLetter(i)} · ${s.label}` }));
     for (const ev of state.plan.events) if (ev.type === 'pausa' && ev.lat != null) wps.push({ lat: ev.lat, lon: ev.lon, name: `Pausa ${ev.minutes}′ · ${ev.place ? ev.place.name : 'area idonea'}` });
     const a = state.analysis;
-    if (a && a.hazards) for (const hz of a.hazards) wps.push({ lat: hz.lat, lon: hz.lon, name: `${hz.severity === 'red' ? 'ATTENZIONE' : 'Verifica'}: ${hz.title}`, desc: hz.detail });
+    for (const hz of allHazards()) wps.push({ lat: hz.lat, lon: hz.lon, name: `${hz.severity === 'red' ? 'ATTENZIONE' : 'Verifica'}: ${hz.title}`, desc: hz.detail });
     const gpx = C.buildGpx({ name: tripTitle(), desc: vehicleLine(r.vehicle, r.margin), coords: r.coords, waypoints: wps });
     const blob = new Blob([gpx], { type: 'application/gpx+xml' });
     const url = URL.createObjectURL(blob);

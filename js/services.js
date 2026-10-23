@@ -315,7 +315,7 @@ ${near}
   way.near[~"^(hgv|bus|tourist_bus|coach)$"~"^no$"];
   node(w.near)[~"${RESTRICTION_KEYS}"~"."];
 )->.lim;
-.lim out body geom;
+.lim out meta geom;
 (
 ${svc}
 )->.svc;
@@ -462,5 +462,65 @@ out body center;`;
     return out;
   }
 
-  root.RPServices = { URLS, ServiceError, geocode, geocodeFallback, reverse, routeValhalla, routeOrs, corridor, corridorQuery, parkings, valhallaBody, comuneAt, sleep, dataIndex, dataTiles };
+  /* ------------------------------ TomTom (seconda opinione) ------------------------------ */
+  /*
+   * Percorso TomTom tra le stesse tappe. mode 'bus': con le dimensioni del mezzo; 'car': come auto.
+   * Restituisce i punti [[lat, lon], ...]. Serve la chiave gratuita dell'utente (developer.tomtom.com).
+   */
+  async function tomtomRoute(stops, veh, margin, opt, key, mode, signal) {
+    const locs = stops.map((s) => s.lat.toFixed(6) + ',' + s.lon.toFixed(6)).join(':');
+    const u = new URL('https://api.tomtom.com/routing/1/calculateRoute/' + locs + '/json');
+    u.searchParams.set('key', key);
+    u.searchParams.set('routeType', 'fastest');
+    u.searchParams.set('traffic', 'false');
+    u.searchParams.set('routeRepresentation', 'polyline');
+    if (mode === 'bus') {
+      u.searchParams.set('travelMode', 'bus');
+      u.searchParams.set('vehicleHeight', (veh.altezza + margin).toFixed(2));
+      u.searchParams.set('vehicleWidth', String(veh.larghezza));
+      u.searchParams.set('vehicleLength', String(veh.lunghezza));
+      u.searchParams.set('vehicleWeight', String(Math.round(veh.peso * 1000)));
+      u.searchParams.set('vehicleAxleWeight', String(Math.round(veh.caricoAsse * 1000)));
+      u.searchParams.set('vehicleCommercial', 'true');
+      u.searchParams.set('vehicleMaxSpeed', String(opt.vmax || 100));
+    } else {
+      u.searchParams.set('travelMode', 'car');
+    }
+    if (opt.avoidTolls) u.searchParams.append('avoid', 'tollRoads');
+    if (opt.avoidHighways) u.searchParams.append('avoid', 'motorways');
+    if (opt.avoidFerries) u.searchParams.append('avoid', 'ferries');
+    const r = await request(u.toString(), { signal }, 30000);
+    if (r.status === 401 || r.status === 403) throw new ServiceError('La chiave TomTom non è valida o non è abilitata alla Routing API.', 'nokey');
+    if (r.status === 429) throw new ServiceError('Limite giornaliero di TomTom raggiunto: riprova domani.', 'rate');
+    const route = r.ok && r.data && r.data.routes && r.data.routes[0];
+    if (!route) {
+      const msg = r.data && r.data.detailedError && r.data.detailedError.message;
+      throw new ServiceError(msg ? 'TomTom: ' + msg : 'TomTom non ha calcolato il percorso.', 'tomtom');
+    }
+    const pts = [];
+    for (const leg of route.legs || []) for (const p of leg.points || []) pts.push([p.latitude, p.longitude]);
+    if (pts.length < 2) throw new ServiceError('TomTom ha restituito un percorso vuoto.', 'tomtom');
+    return pts;
+  }
+
+  /* ------------------------------ Mapillary (foto stradali) ------------------------------ */
+  /* foto più recente entro ~40 m e cartelli di limite rilevati nelle foto; serve un token gratuito */
+  async function mapillaryNear(lat, lon, token, signal) {
+    const dLat = 0.00036, dLon = 0.0005;
+    const bbox = [lon - dLon, lat - dLat, lon + dLon, lat + dLat].map((x) => x.toFixed(6)).join(',');
+    const base = 'https://graph.mapillary.com/';
+    const tk = 'access_token=' + encodeURIComponent(token);
+    const [imgs, feats] = await Promise.all([
+      request(`${base}images?${tk}&fields=id,thumb_256_url,captured_at&bbox=${bbox}&limit=30`, { signal }, 12000),
+      request(`${base}map_features?${tk}&fields=id,object_value,geometry,last_seen_at&bbox=${bbox}`, { signal }, 12000),
+    ]);
+    if ([imgs.status, feats.status].some((x) => x === 401 || x === 403)) throw new ServiceError('Il token Mapillary non è valido.', 'nokey');
+    const list = (imgs.ok && imgs.data && imgs.data.data) || [];
+    list.sort((a, b) => (b.captured_at || 0) - (a.captured_at || 0));
+    const signs = ((feats.ok && feats.data && feats.data.data) || [])
+      .filter((f) => /height|weight|width|length|axle|heavy|truck|goods|bus/i.test(f.object_value || ''));
+    return { image: list[0] || null, signs };
+  }
+
+  root.RPServices = { URLS, ServiceError, geocode, geocodeFallback, reverse, routeValhalla, routeOrs, corridor, corridorQuery, parkings, valhallaBody, comuneAt, sleep, dataIndex, dataTiles, tomtomRoute, mapillaryNear };
 })(typeof self !== 'undefined' ? self : this);

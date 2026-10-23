@@ -108,3 +108,23 @@ test('dati: il filtro veloce non scarta vie vicine al percorso', () => {
   assert.equal(idx.nearBox(45.004, 9.0001, 45.005, 9.0002, 40), true);
   assert.equal(idx.nearBox(45.004, 9.05, 45.005, 9.06, 40), false);
 });
+
+test('dati: data e versione della modifica nei riquadri', () => {
+  const f = line('way', 11, [[45.48, 9.2], [45.481, 9.2]], { highway: 'primary', maxheight: '3.5', 'source:maxheight': 'sign' });
+  f.properties['@timestamp'] = 1552377600; // come lo esporta osmium: 2019-03-12T08:00:00Z
+  f.properties['@version'] = 4;
+  const { tiles } = build([f]);
+  const el = C.tileToElements(tiles.get(C.tileKey(45.48, 9.2, D.RIQUADRO)))[0];
+  const m = C.osmMeta(el, 'altezza');
+  assert.equal(m.date, '2019-03-12');
+  assert.equal(m.version, 4);
+  assert.equal(m.source, 'sign');
+  assert.equal(m.highway, 'primary');
+});
+
+test('dati: conversione delle date di osmium', () => {
+  assert.equal(D.isoDay(1552377600), '2019-03-12');
+  assert.equal(D.isoDay('2019-03-12T08:00:00Z'), '2019-03-12');
+  assert.equal(D.isoDay(0), null);
+  assert.equal(D.isoDay(undefined), null);
+});
