@@ -940,7 +940,7 @@
       // con i dati scaricati i tratti arrivano in pochi millisecondi: si rianalizza al massimo una volta al secondo
       const lastOne = a.done === todo.length;
       if (lastOne || Date.now() - (a.analyzedAt || 0) > 1000) {
-        Object.assign(a, C.analyzeElements(Array.from(elements.values()), r.index, r.vehicle));
+        Object.assign(a, C.analyzeElements(Array.from(elements.values()), r.index, r.vehicle, { streetAt: (al) => C.streetAtAlong(r, al) }));
         for (const sv of a.services) sv.T = C.timeAtAlong(r, sv.along);
         a.analyzedAt = Date.now();
         drawHazards(); renderHazards(); renderMini();
@@ -1064,8 +1064,9 @@
     if ((!a || !a.hazards) && !(state.tomtom && state.tomtom.status === 'done')) return;
     hazardMarkers.clear();
     for (const hz of allHazards()) {
-      const icon = L.divIcon({ className: '', html: `<div class="hz-marker ${hz.severity}">${hazardSign(hz)}</div>`, iconSize: [30, 30], iconAnchor: [15, 15] });
-      const mk = L.marker([hz.lat, hz.lon], { icon, zIndexOffset: hz.severity === 'red' ? 600 : 500, title: hz.title })
+      const maybe = hz.rel === 'vicino';
+      const icon = L.divIcon({ className: '', html: `<div class="hz-marker ${hz.severity}${maybe ? ' maybe' : ''}">${hazardSign(hz)}</div>`, iconSize: [30, 30], iconAnchor: [15, 15] });
+      const mk = L.marker([hz.lat, hz.lon], { icon, zIndexOffset: maybe ? 400 : hz.severity === 'red' ? 600 : 500, title: hz.title + (maybe ? ' (forse non sul percorso)' : '') })
         .on('click', () => openHazardPopup(hz))
         .addTo(lg.hazards);
       hazardMarkers.set(hz.ids[0], mk);
@@ -1163,6 +1164,25 @@
     return box;
   }
 
+  /* per i punti "vicino al percorso": spiegazione, indizi e decisione dell'operatore */
+  function relevanceBlock(hz) {
+    if (hz.promoted === 'nome') return h('p', { class: 'tt-verdict passa', text: 'Riconosciuto sul percorso: la strada del limite ha lo stesso nome o sigla di quella percorsa.' });
+    if (hz.confermato) {
+      return h('div', { class: 'hzpop-decide' }, h('span', { class: 'tt-verdict passa', text: 'Confermato da te: riguarda il percorso.' }),
+        h('button', { type: 'button', class: 'btn-ghost', onclick: () => setDecision(hz, null) }, 'Annulla'));
+    }
+    if (hz.rel !== 'vicino') return null;
+    const r = hz.road || {};
+    const tipo = r.bridge && r.bridge !== 'no' ? 'è su un ponte o viadotto' : r.tunnel && r.tunnel !== 'no' ? 'è in galleria' : 'non risulta né su un ponte né in galleria';
+    const dist = Math.max(1, Math.round(hz.distM || 0));
+    return h('div', { class: 'hzpop-maybe' },
+      h('b', { text: 'Forse non sul percorso' }),
+      h('span', { text: `Il limite è su una strada a ${dist} m dal percorso che non coincide con quella percorsa; la strada del limite ${tipo}. Potrebbe passare sotto un viadotto o essere una laterale: controlla con Street View e indica se riguarda il tuo tragitto.` }),
+      h('div', { class: 'hzpop-decide' },
+        h('button', { type: 'button', class: 'btn-secondary', onclick: () => setDecision(hz, 'si') }, 'Riguarda il percorso'),
+        h('button', { type: 'button', class: 'btn-secondary', onclick: () => setDecision(hz, 'no') }, 'Non riguarda il percorso')));
+  }
+
   function hazardCard(hz) {
     const span = hz.alongEnd - hz.alongStart;
     const eta = clockAtAlong(hz.alongStart);
@@ -1177,15 +1197,18 @@
     const percorsa = C.streetAtAlong(state.route, hz.alongStart);
     const rows = [['Strada percorsa', percorsa || 'non indicata']];
     if (isOsm) rows.push(['Strada del limite', hz.name || 'senza nome']);
+    if (hz.rel === 'vicino' && hz.distM != null) rows.push(['Distanza dal percorso', `${Math.max(1, Math.round(hz.distM))} m`]);
     rows.push(['Posizione', hazardKm(hz) + ' dalla partenza'], ['Vicino a', near]);
     if (eta) rows.push(['Ci arrivi', 'verso le ' + C.fmtClock(eta, depMs())]);
     if (span > 150) rows.push(['Tratto', C.fmtDist(span)]);
     return h('div', { class: 'hzpop' },
       h('div', { class: 'hzpop-head' },
-        h('span', { svg: hazardSign(hz) }),
-        h('span', null, h('b', { text: hz.title }), h('span', { class: `sev sev-${hz.severity}-bg`, text: hz.severity === 'red' ? 'Non transitabile' : 'Da verificare' }))),
+        h('span', { class: hz.rel === 'vicino' ? 'maybe' : null, svg: hazardSign(hz) }),
+        h('span', null, h('b', { text: hz.title }), h('span', { class: `sev sev-${hz.severity}-bg`, text: hz.severity === 'red' ? 'Non transitabile' : 'Da verificare' }),
+          hz.rel === 'vicino' ? h('span', { class: 'maybe-tag', text: 'Forse non sul percorso' }) : null)),
       h('p', { text: hz.detail }),
       h('dl', null, rows.flatMap(([k, v]) => [h('dt', { text: k }), v.nodeType ? v : h('dd', { text: v })])),
+      relevanceBlock(hz),
       hazardTrust(hz),
       hz.tomtom && hz.kind !== 'tomtom' ? h('p', { class: 'tt-verdict ' + hz.tomtom + (hz.severity === 'red' && hz.tomtom === 'passa' ? ' conflitto' : ''), text: ttText(hz) }) : null,
       !state.tomtom && isOsm ? h('p', { class: 'hz-meta', text: 'Per una seconda verifica con TomTom aggiungi la chiave nelle preferenze di percorso.' }) : null,
@@ -1271,32 +1294,71 @@
   /* ------------------------------------------------------------------ */
   /* Pannello dei risultati                                              */
   /* ------------------------------------------------------------------ */
-  /* punti di OpenStreetMap, con il giudizio di TomTom, più i tratti evitati solo da TomTom */
-  function allHazards() {
+  /* ---------- decisioni dell'operatore sui punti "vicino al percorso" (per viaggio, su questo dispositivo) ---------- */
+  const DECISIONS_KEY = 'rotta-pullman/decisioni';
+  let decisions = {};
+  try { decisions = JSON.parse(localStorage.getItem(DECISIONS_KEY)) || {}; } catch (e) { decisions = {}; }
+  function tripKey() {
+    const r = state.route;
+    return r ? r.stops.map((x) => x.lat.toFixed(4) + ',' + x.lon.toFixed(4)).join(';') : '';
+  }
+  function decisionOf(hz) { return decisions[tripKey() + '|' + hz.ids[0]] || null; }
+  function setDecision(hz, val) {
+    const k = tripKey() + '|' + hz.ids[0];
+    if (val) decisions[k] = val; else delete decisions[k];
+    const keys = Object.keys(decisions);
+    if (keys.length > 800) for (const x of keys.slice(0, keys.length - 800)) delete decisions[x];
+    try { localStorage.setItem(DECISIONS_KEY, JSON.stringify(decisions)); } catch (e) { /* memoria non disponibile */ }
+    map.closePopup();
+    drawHazards(); renderCheck(); renderHazards(); renderMini();
+    toast(val === 'no' ? 'Punto escluso: non riguarda il percorso.' : val === 'si' ? 'Punto confermato sul percorso.' : 'Decisione annullata.');
+  }
+
+  /*
+   * Tutti i punti: quelli di OpenStreetMap (sul percorso o vicino), con il giudizio di TomTom e la
+   * decisione dell'operatore, più i tratti evitati solo da TomTom.
+   */
+  function hazardsWithStatus() {
     const a = state.analysis;
     const base = (a && a.hazards) || [];
     const tt = state.tomtom && state.tomtom.status === 'done' ? state.tomtom.cmp : null;
-    if (!tt) return base;
-    const out = base.map((hz) => Object.assign({}, hz, { tomtom: tt.verdict(hz.alongStart, hz.alongEnd) }));
-    tt.avoided.forEach((run, i) => {
-      if (base.some((hz) => hz.alongStart <= run.alongEnd + 150 && hz.alongEnd >= run.alongStart - 150)) return; // già tra i punti OSM
-      const pt = state.route.index.pointAt(Math.min(run.alongEnd, run.alongStart + 50));
-      out.push({
-        kind: 'tomtom', severity: 'amber', value: null, title: 'Tratto evitato da TomTom',
-        detail: 'Con le dimensioni del tuo mezzo TomTom passa da un\'altra strada; con un\'auto percorre questo tratto.',
-        ids: ['tomtom/' + (i + 1)], name: '', alongStart: run.alongStart, alongEnd: run.alongEnd, lat: pt[0], lon: pt[1], tomtom: 'evita', meta: null,
-      });
+    const out = base.map((hz) => {
+      const o = Object.assign({}, hz);
+      if (tt) o.tomtom = tt.verdict(hz.alongStart, hz.alongEnd);
+      o.decisione = decisionOf(hz);
+      if (o.decisione === 'si' && o.rel === 'vicino') { o.rel = 'certo'; o.confermato = true; }
+      return o;
     });
-    out.sort((x, y) => (x.severity === y.severity ? x.alongStart - y.alongStart : x.severity === 'red' ? -1 : 1));
+    if (tt) {
+      tt.avoided.forEach((run, i) => {
+        if (base.some((hz) => hz.alongStart <= run.alongEnd + 150 && hz.alongEnd >= run.alongStart - 150)) return; // già tra i punti OSM
+        const pt = state.route.index.pointAt(Math.min(run.alongEnd, run.alongStart + 50));
+        const o = {
+          kind: 'tomtom', severity: 'amber', rel: 'certo', value: null, title: 'Tratto evitato da TomTom',
+          detail: 'Con le dimensioni del tuo mezzo TomTom passa da un\'altra strada; con un\'auto percorre questo tratto.',
+          ids: ['tomtom/' + (i + 1)], name: '', alongStart: run.alongStart, alongEnd: run.alongEnd, lat: pt[0], lon: pt[1], tomtom: 'evita', meta: null,
+        };
+        o.decisione = decisionOf(o);
+        out.push(o);
+      });
+    }
+    out.sort(C.hazardOrder);
     return out;
   }
+  function allHazards() { return hazardsWithStatus().filter((hz) => hz.decisione !== 'no'); }
+  function excludedHazards() { return hazardsWithStatus().filter((hz) => hz.decisione === 'no'); }
 
   function hazardCounts() {
     const a = state.analysis;
     const ttDone = state.tomtom && state.tomtom.status === 'done';
     if ((!a || !a.hazards) && !ttDone) return null;
     const list = allHazards();
-    return { red: list.filter((x) => x.severity === 'red').length, amber: list.filter((x) => x.severity === 'amber').length };
+    const sure = list.filter((x) => x.rel !== 'vicino');
+    return {
+      red: sure.filter((x) => x.severity === 'red').length,
+      amber: sure.filter((x) => x.severity === 'amber').length,
+      vicino: list.length - sure.length,
+    };
   }
 
   async function runTomTom(my, signal) {
@@ -1367,6 +1429,7 @@
     dot.className = 'tab-dot';
     if (c && c.red) { mini.append(' · ', h('span', { class: 'sev-red', text: `${c.red} critic${c.red === 1 ? 'o' : 'i'}` })); dot.className = 'tab-dot sev-red'; }
     else if (c && c.amber) { mini.append(' · ', h('span', { class: 'sev-amber', text: `${c.amber} da verificare` })); dot.className = 'tab-dot sev-amber'; }
+    else if (c && c.vicino) { mini.append(' · ', h('span', { class: 'sev-amber', text: `${c.vicino} vicino al percorso` })); dot.className = 'tab-dot sev-amber'; }
   }
 
   const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
@@ -1385,9 +1448,10 @@
     const list = allHazards();
     const ul = h('ul', { class: 'check-pts' });
     for (const hz of list.slice(0, 3)) {
-      ul.append(h('li', null, h('button', { type: 'button', class: 'check-pt', onclick: () => focusHazard(hz) },
-        h('span', { class: 'check-pt-sign', svg: hazardSign(hz) }),
-        h('span', { class: 'check-pt-text' }, h('b', { text: hz.title }), h('span', { text: hazardWhereShort(hz) })),
+      const maybe = hz.rel === 'vicino';
+      ul.append(h('li', null, h('button', { type: 'button', class: 'check-pt' + (maybe ? ' maybe' : ''), onclick: () => focusHazard(hz) },
+        h('span', { class: 'check-pt-sign' + (maybe ? ' maybe' : ''), svg: hazardSign(hz) }),
+        h('span', { class: 'check-pt-text' }, h('b', { text: hz.title }), maybe ? h('span', { class: 'maybe-tag', text: 'Forse non sul percorso' }) : null, h('span', { text: hazardWhereShort(hz) })),
         h('span', { class: 'check-pt-go', text: 'Mappa ›' }))));
     }
     if (list.length > 3) {
@@ -1416,15 +1480,21 @@
       }
       if (c && (c.red || c.amber)) body.append(h('span', { class: 'so-far', text: `Finora: ${plural(c.red, 'non transitabile', 'non transitabili')}, ${c.amber} da verificare.` }));
     } else if (a.status === 'done' || a.status === 'partial') {
+      const vic = c.vicino ? ` Ci sono anche ${plural(c.vicino, 'limite', 'limiti')} su strade a pochi metri, segnati con «?»: controlla se riguardano il tuo tragitto.` : '';
       if (c.red) {
         box.classList.add('red');
         body.append(h('b', { text: `${plural(c.red, 'punto non transitabile', 'punti non transitabili')} per questo mezzo` }),
-          'Secondo OpenStreetMap ci sono limiti incompatibili sul percorso. Tocca un punto per vederlo sulla mappa e sapere cosa fare.');
+          'Secondo OpenStreetMap ci sono limiti incompatibili sul percorso. Tocca un punto per vederlo sulla mappa e sapere cosa fare.' + vic);
         body.append(checkPoints());
       } else if (c.amber) {
         box.classList.add('amber');
         body.append(h('b', { text: plural(c.amber, 'punto da verificare', 'punti da verificare') }),
-          'Nessun limite incompatibile, ma ci sono passaggi con margini stretti o divieti da controllare sul cartello. Tocca un punto per vederlo sulla mappa.');
+          'Nessun limite incompatibile, ma ci sono passaggi con margini stretti o divieti da controllare sul cartello. Tocca un punto per vederlo sulla mappa.' + vic);
+        body.append(checkPoints());
+      } else if (c.vicino) {
+        box.classList.add('amber');
+        body.append(h('b', { text: plural(c.vicino, 'limite vicino al percorso', 'limiti vicino al percorso') }),
+          'Sulla strada percorsa non risultano limiti, ma ce ne sono su strade a pochi metri: potrebbero passare sotto un viadotto o essere laterali. Controlla se riguardano il tuo tragitto.');
         body.append(checkPoints());
       } else if (a.status === 'done') {
         box.classList.add('ok');
@@ -1614,7 +1684,7 @@
     const loading = !a || a.status === 'loading';
     const list = allHazards();
     if ((!a || !a.hazards) && !list.length) { ul.append(h('li', { class: 'none' }, loading ? 'Controllo in corso…' : 'Elenco non disponibile.')); return; }
-    if (!list.length) {
+    if (!list.length && !excludedHazards().length) {
       ul.append(h('li', { class: 'none' }, loading ? 'Nessun punto critico finora, il controllo continua…'
         : a.status === 'partial' ? 'Nessun punto critico nei tratti controllati.'
           : 'Nessun punto critico per questo mezzo nei dati di OpenStreetMap.'));
@@ -1629,9 +1699,11 @@
       const isOsm = !hz.ids[0].startsWith('tomtom/');
       const osm = hz.ids[0].split('/');
       const doubts = C.hazardDoubts(hz);
-      ul.append(h('li', { class: 'hz' },
-        h('span', { svg: hazardSign(hz) }),
+      const maybe = hz.rel === 'vicino';
+      ul.append(h('li', { class: 'hz' + (maybe ? ' maybe' : '') },
+        h('span', { class: maybe ? 'maybe' : null, svg: hazardSign(hz) }),
         h('div', { class: 'hz-body' },
+          maybe ? h('span', { class: 'maybe-tag', text: `Forse non sul percorso · a ${Math.max(1, Math.round(hz.distM || 0))} m` }) : null,
           h('span', { class: 'hz-title' }, hz.title, h('span', { class: `sev sev-${hz.severity}-bg`, text: hz.severity === 'red' ? 'Non transitabile' : 'Da verificare' })),
           h('span', { text: hz.detail }),
           h('span', { class: 'hz-meta', text: meta }),
@@ -1644,6 +1716,14 @@
             isOsm ? h('a', { href: `https://www.openstreetmap.org/${osm[0]}/${osm[1]}`, target: '_blank', rel: 'noopener' }, 'Dati OSM') : null))));
     }
     if (loading) ul.append(h('li', { class: 'none' }, 'Controllo degli altri tratti in corso…'));
+    const ex = excludedHazards();
+    if (ex.length) {
+      ul.append(h('li', { class: 'hz-excluded' }, h('details', null,
+        h('summary', null, `Esclusi perché non riguardano il percorso (${ex.length})`),
+        h('ul', null, ex.map((hz) => h('li', null,
+          h('span', { text: `${hz.title} · ${hazardKm(hz)}` }),
+          h('button', { type: 'button', class: 'btn-ghost', onclick: () => setDecision(hz, null) }, 'Ripristina')))))));
+    }
   }
 
   function renderParkings() {
@@ -1720,7 +1800,7 @@
     const wps = r.stops.map((s, i) => ({ lat: s.lat, lon: s.lon, name: `${C.stopLetter(i)} · ${s.label}` }));
     for (const ev of state.plan.events) if (ev.type === 'pausa' && ev.lat != null) wps.push({ lat: ev.lat, lon: ev.lon, name: `Pausa ${ev.minutes}′ · ${ev.place ? ev.place.name : 'area idonea'}` });
     const a = state.analysis;
-    for (const hz of allHazards()) wps.push({ lat: hz.lat, lon: hz.lon, name: `${hz.severity === 'red' ? 'ATTENZIONE' : 'Verifica'}: ${hz.title}`, desc: hz.detail });
+    for (const hz of allHazards()) wps.push({ lat: hz.lat, lon: hz.lon, name: `${hz.rel === 'vicino' ? 'Forse (vicino)' : hz.severity === 'red' ? 'ATTENZIONE' : 'Verifica'}: ${hz.title}`, desc: hz.detail });
     const gpx = C.buildGpx({ name: tripTitle(), desc: vehicleLine(r.vehicle, r.margin), coords: r.coords, waypoints: wps });
     const blob = new Blob([gpx], { type: 'application/gpx+xml' });
     const url = URL.createObjectURL(blob);

@@ -35,7 +35,7 @@ function serve() {
 
 /* ---------------- servizi simulati ---------------- */
 const VIA_A1 = [[45.4860, 9.2044], [45.40, 9.33], [45.31, 9.50], [45.05, 9.70], [44.80, 10.33], [44.65, 10.93], [44.50, 11.34], [44.25, 11.30], [43.95, 11.20], [43.7629, 11.2650]];
-const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null, tomtomUrls: [] };
+const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null, tomtomUrls: [], vicino: false };
 
 function densify(pts, step) {
   const out = [];
@@ -125,7 +125,7 @@ function mockOverpass(data) {
       sv(0.3, 160, 201, 'Area di servizio Arda'),
       sv(0.55, 150, 202, 'Area di servizio Secchia Est'),
       sv(0.56, -150, 203, 'Area di servizio Secchia Ovest'),
-    ],
+    ].concat(mocks.vicino ? [Object.assign({ type: 'node', id: 7001, tags: { maxheight: '3.2', barrier: 'height_restrictor' } }, (() => { const q = offsetPoint(c, 0.45, 4); return { lat: q.lat, lon: q.lon }; })())] : []),
   };
 }
 
@@ -578,6 +578,57 @@ async function setupRoutes(context) {
       assert.doesNotMatch(Buffer.from(shared.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString(), /CHIAVE-PROVA|TOKEN-PROVA/);
     });
     await tctx.close();
+  }
+
+  /* --- limite "vicino al percorso": segnalato a parte, l'operatore decide --- */
+  {
+    const vctx = await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: 'it-IT', timezoneId: 'Europe/Rome' });
+    await setupRoutes(vctx);
+    mocks.vicino = true;
+    const q = await vctx.newPage();
+    watch(q, 'vicino');
+    await q.goto(base);
+    await step('limite vicino al percorso: segnalato con «?» e deciso dall\'operatore', async () => {
+      await q.waitForFunction(() => window.__rp.state.analysis && window.__rp.state.analysis.status === 'done', null, { timeout: 30000 });
+      assert.equal(await q.locator('#hazards .hz').count(), 4);
+      assert.equal(await q.locator('#hazards .hz.maybe').count(), 1);
+      assert.match(await q.textContent('#hazards .hz.maybe'), /Forse non sul percorso · a 4 m.*Altezza massima 3,2 m/s);
+      assert.equal(await q.locator('.hz-marker.maybe').count(), 1);
+      // il punto vicino non conta tra i non transitabili sul percorso
+      assert.match(await q.textContent('#check-banner'), /^1 punto non transitabile/);
+      assert.match(await q.textContent('#check-banner'), /anche 1 limite su strade a pochi metri/);
+      assert.match(await q.textContent('#mini-sum'), /1 critico/);
+      // scheda: spiegazione e decisione
+      await q.locator('#hazards .hz.maybe button', { hasText: 'Mostra sulla mappa' }).click();
+      await q.waitForSelector('.hz-popup .hzpop-maybe', { timeout: 5000 });
+      const card = await q.textContent('.hz-popup .hzpop');
+      assert.match(card, /Distanza dal percorso\s*4 m/);
+      assert.match(card, /non risulta né su un ponte né in galleria/);
+      await q.waitForTimeout(700);
+      await q.screenshot({ path: path.join(OUT, '12a-vicino-scheda.png') });
+      await q.locator('.hz-popup button', { hasText: 'Non riguarda il percorso' }).click();
+      await q.waitForFunction(() => document.querySelectorAll('#hazards .hz').length === 3);
+      assert.equal(await q.locator('.hz-marker.maybe').count(), 0);
+      assert.match(await q.textContent('#hazards'), /Esclusi perché non riguardano il percorso \(1\)/);
+      assert.doesNotMatch(await q.textContent('#check-banner'), /pochi metri/);
+      // la decisione resta per lo stesso viaggio anche dopo aver ricaricato
+      await q.reload();
+      await q.evaluate(() => window.__rp.computeRoute());
+      await q.waitForFunction(() => window.__rp.state.analysis && window.__rp.state.analysis.status === 'done', null, { timeout: 30000 });
+      assert.equal(await q.locator('#hazards .hz').count(), 3);
+      // ripristina e poi conferma: diventa un allarme pieno
+      await q.click('.hz-excluded summary');
+      await q.click('.hz-excluded button:has-text("Ripristina")');
+      await q.waitForFunction(() => document.querySelectorAll('#hazards .hz.maybe').length === 1);
+      await q.locator('#hazards .hz.maybe button', { hasText: 'Mostra sulla mappa' }).click();
+      await q.waitForSelector('.hz-popup .hzpop-maybe', { timeout: 5000 });
+      await q.locator('.hz-popup').getByRole('button', { name: 'Riguarda il percorso', exact: true }).click();
+      await q.waitForFunction(() => document.querySelectorAll('#hazards .hz').length === 4 && document.querySelectorAll('#hazards .hz.maybe').length === 0);
+      assert.match(await q.textContent('#check-banner'), /^2 punti non transitabili/);
+      await q.screenshot({ path: path.join(OUT, '12-vicino-confermato.png') });
+    });
+    mocks.vicino = false;
+    await vctx.close();
   }
 
   /* --- tema scuro --- */

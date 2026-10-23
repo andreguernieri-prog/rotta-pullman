@@ -686,11 +686,69 @@
   }
 
   /*
+   * Regola larga (quella usata prima): la via corre entro 6 m dal percorso con direzione simile
+   * per almeno 20 m. Serve a segnalare i limiti "vicino al percorso", da far controllare all'operatore.
+   */
+  function wayNear(geom, idx) {
+    const tol = 6;
+    const pts = geom.map((g) => [g.lat, g.lon]);
+    let total = 0;
+    for (let i = 0; i < pts.length - 1; i++) total += haversine(pts[i], pts[i + 1]);
+    const step = Math.min(50, Math.max(4, total / 150));
+    let alignedLen = 0, minA = Infinity, maxA = -Infinity, firstPt = null, minDist = Infinity;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i + 1];
+      const len = haversine(a, b);
+      if (len <= 0) continue;
+      const wb = bearing(a, b);
+      const n = Math.max(1, Math.ceil(len / step));
+      for (let k = 0; k < n; k++) {
+        const t = (k + 0.5) / n;
+        const p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        const r = idx.nearest(p[0], p[1], tol);
+        if (!r) continue;
+        if (r.dist < minDist) minDist = r.dist;
+        if (axisDiff(wb, r.bearing) < 25 * RAD) {
+          alignedLen += len / n;
+          if (r.along < minA) { minA = r.along; firstPt = p; }
+          if (r.along > maxA) maxA = r.along;
+        }
+      }
+    }
+    const onRoute = alignedLen > 0 && alignedLen >= Math.min(20, total * 0.5);
+    return { onRoute, alongStart: minA, alongEnd: maxA, point: firstPt, minDist };
+  }
+
+  /* ordine dei punti: prima quelli sul percorso, poi i non transitabili, poi per posizione */
+  function hazardOrder(a, b) {
+    const ra = a.rel === 'vicino' ? 1 : 0, rb = b.rel === 'vicino' ? 1 : 0;
+    if (ra !== rb) return ra - rb;
+    if (a.severity !== b.severity) return a.severity === 'red' ? -1 : 1;
+    return a.alongStart - b.alongStart;
+  }
+
+  /* la strada del limite ha lo stesso nome o la stessa sigla di quella percorsa? */
+  function compactRef(x) { return String(x || '').toUpperCase().replace(/[\s.\-]/g, ''); }
+  function sameRoad(tags, streets) {
+    if (!streets) return false;
+    const mine = [tags.name, tags.ref].filter(Boolean).flatMap((x) => String(x).split(';'));
+    if (!mine.length) return false;
+    const theirs = String(streets).split(/[,;]/).map((x) => x.trim()).filter(Boolean);
+    return mine.some((m) => theirs.some((t) => (normName(m) && normName(m) === normName(t)) || (compactRef(m).length >= 2 && compactRef(m) === compactRef(t))));
+  }
+
+  /*
    * Analizza gli elementi Overpass rispetto al percorso.
    * Restituisce i punti critici raggruppati, le aree di servizio raggiungibili
    * e quanti tratti con limiti sono stati controllati.
    */
-  function analyzeElements(elements, idx, veh) {
+  /*
+   * opts.streetAt(along): nome della strada percorsa in un punto, per riconoscere i limiti
+   * "vicino al percorso" che sono in realtà sulla stessa strada (stesso nome o sigla).
+   * Ogni punto critico ha rel = 'certo' (sulla strada percorsa) o 'vicino' (da controllare).
+   */
+  function analyzeElements(elements, idx, veh, opts) {
+    opts = opts || {};
     const raw = [];
     const services = [];
     let checked = 0;
@@ -713,21 +771,39 @@
       if (!hasRestrictionTags(tags)) continue;
       let rel;
       if (el.type === 'node') {
-        // il nodo deve essere un punto della strada percorsa, non una barriera su una laterale vicina
+        // sul percorso se il nodo è un punto della strada percorsa; entro 6 m è solo "vicino"
         const v = idx.nearestVertex(el.lat, el.lon, 2.5);
-        if (!v) continue;
-        rel = { onRoute: true, alongStart: v.along, alongEnd: v.along, point: [el.lat, el.lon] };
+        if (v) rel = { onRoute: true, alongStart: v.along, alongEnd: v.along, point: [el.lat, el.lon], minDist: v.dist };
+        else {
+          const r = idx.nearest(el.lat, el.lon, 6);
+          if (!r) continue;
+          rel = { onRoute: true, vicino: true, alongStart: r.along, alongEnd: r.along, point: [el.lat, el.lon], minDist: r.dist };
+        }
       } else if (el.geometry && el.geometry.length > 1) {
         let a0 = Infinity, o0 = Infinity, a1 = -Infinity, o1 = -Infinity;
         for (const g of el.geometry) { if (g.lat < a0) a0 = g.lat; if (g.lat > a1) a1 = g.lat; if (g.lon < o0) o0 = g.lon; if (g.lon > o1) o1 = g.lon; }
         if (!idx.nearBox(a0, o0, a1, o1, 40)) continue;
-        rel = wayRelation(el.geometry, idx, 6);
+        rel = wayRelation(el.geometry, idx);
+        if (rel.onRoute) rel.minDist = 0;
+        else {
+          const loose = wayNear(el.geometry, idx);
+          if (loose.onRoute) rel = Object.assign({}, loose, { vicino: true, crosses: rel.crosses });
+        }
       } else continue;
+
+      // "vicino" ma con lo stesso nome o sigla della strada percorsa: è sul percorso
+      let promoted = null;
+      if (rel.onRoute && rel.vicino && opts.streetAt && sameRoad(tags, opts.streetAt((rel.alongStart + rel.alongEnd) / 2))) {
+        rel.vicino = false;
+        promoted = 'nome';
+      }
 
       const issues = evaluateTags(tags, veh);
       if (rel.onRoute) {
-        checked++;
+        if (!rel.vicino) checked++;
         for (const is of issues) raw.push(Object.assign({}, is, {
+          rel: rel.vicino ? 'vicino' : 'certo', distM: rel.minDist, promoted,
+          road: { bridge: tags.bridge || null, tunnel: tags.tunnel || null, layer: tags.layer || null },
           ids: [el.type + '/' + el.id], name: tags.name || tags.ref || '', meta: osmMeta(el, is.kind),
           alongStart: rel.alongStart, alongEnd: rel.alongEnd,
           lat: rel.point ? rel.point[0] : idx.pointAt(rel.alongStart)[0],
@@ -738,6 +814,7 @@
         for (const is of issues) {
           if (is.kind !== 'altezza') continue;
           raw.push(Object.assign({}, is, {
+            rel: 'vicino', road: { bridge: tags.bridge || null, tunnel: tags.tunnel || null, layer: tags.layer || null },
             severity: 'amber', detail: 'Limite indicato sul ponte che attraversa il percorso: verifica',
             ids: [el.type + '/' + el.id], name: tags.name || tags.ref || '', meta: osmMeta(el, is.kind),
             alongStart: rel.alongStart, alongEnd: rel.alongEnd, lat: null, lon: null, crossing: true,
@@ -763,10 +840,11 @@
     raw.sort((a, b) => a.alongStart - b.alongStart);
     const hazards = [];
     for (const h of raw) {
-      const key = h.kind + '|' + h.severity + '|' + h.title;
+      const key = h.kind + '|' + h.severity + '|' + h.title + '|' + h.rel;
       const prev = hazards.slice().reverse().find((x) => x._key === key);
       if (prev && h.alongStart - prev.alongEnd < 250) {
         prev.alongEnd = Math.max(prev.alongEnd, h.alongEnd);
+        if (h.distM != null && (prev.distM == null || h.distM < prev.distM)) prev.distM = h.distM;
         prev.ids.push(...h.ids.filter((i) => !prev.ids.includes(i)));
         if (!prev.name && h.name) prev.name = h.name;
         continue;
@@ -774,7 +852,7 @@
       hazards.push(Object.assign({ _key: key }, h));
     }
     hazards.forEach((h) => delete h._key);
-    hazards.sort((a, b) => (a.severity === b.severity ? a.alongStart - b.alongStart : a.severity === 'red' ? -1 : 1));
+    hazards.sort(hazardOrder);
 
     // aree di servizio: una sola per nome/posizione
     services.sort((a, b) => a.along - b.along);
@@ -1126,7 +1204,7 @@
     PRESETS, LIMITS, RULES, sanitizeVehicle,
     haversine, bearing, decodePolyline, encodePolyline, simplify, RouteIndex,
     buildCumTime, splitByDistance, normalizeValhalla, streetAtAlong, normalizeOrs, finishRoute, timeAtAlong, alongAtTime,
-    parseLength, parseWeight, evaluateTags, hazardAdvice, hasRestrictionTags, osmMeta, sourceLabel, hazardDoubts, compareRoutes, wayRelation, analyzeElements,
+    parseLength, parseWeight, evaluateTags, hazardAdvice, hasRestrictionTags, wayNear, sameRoad, hazardOrder, osmMeta, sourceLabel, hazardDoubts, compareRoutes, wayRelation, analyzeElements,
     planTrip, fmtDur, fmtDist, fmtClock, fmtNum, stopLetter, parseCoords,
     buildGpx, encodeShare, decodeShare, normName, matchPermit, groupPermits,
     tileKey, tilesAround, tilesForCoords, pointInRings, coordsCovered, tileToElements,

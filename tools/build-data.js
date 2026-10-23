@@ -25,7 +25,7 @@ const RIQUADRO = 0.25;
 
 const RESTR_KEYS = ['maxheight', 'maxheight:physical', 'maxwidth', 'maxwidth:physical', 'maxlength', 'maxweight', 'maxweightrating', 'maxaxleload'];
 const ACCESS_KEYS = ['hgv', 'bus', 'tourist_bus', 'coach'];
-const KEEP_R = RESTR_KEYS.concat(ACCESS_KEYS, ['psv', 'name', 'ref', 'bridge', 'highway',
+const KEEP_R = RESTR_KEYS.concat(ACCESS_KEYS, ['psv', 'name', 'ref', 'bridge', 'tunnel', 'layer', 'highway',
   'source', 'source:maxheight', 'source:maxweight', 'source:maxwidth', 'source:maxlength', 'source:hgv',
   'check_date', 'check_date:maxheight', 'check_date:maxweight', 'survey:date']);
 const KEEP_P = ['name', 'fee', 'capacity:bus', 'capacity:coach', 'access', 'opening_hours', 'bus', 'coach', 'tourist_bus', 'hgv', 'parking'];

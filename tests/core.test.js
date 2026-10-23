@@ -342,8 +342,15 @@ test('caso reale: la strada sotto il Viadotto Opolo (SP510) non è sul percorso'
   const rel = C.wayRelation(geometry, idx);
   assert.equal(rel.onRoute, false);
   const a = C.analyzeElements([{ type: 'way', id: 736359248, tags: { highway: 'unclassified', maxheight: '3.5' }, geometry }], idx, veh);
-  assert.equal(a.hazards.length, 0);
+  // non è "sul percorso", ma resta segnalato come "vicino al percorso" perché lo controlli l'operatore
+  assert.equal(a.hazards.length, 1);
+  assert.equal(a.hazards[0].rel, 'vicino');
+  assert.ok(a.hazards[0].distM < 6);
   assert.equal(a.checked, 0);
+  // se avesse lo stesso nome della strada percorsa, sarebbe sul percorso
+  const b = C.analyzeElements([{ type: 'way', id: 1, tags: { highway: 'secondary', ref: 'SP 510', maxheight: '3.5' }, geometry }], idx, veh, { streetAt: () => 'SP510, Via Sebina' });
+  assert.equal(b.hazards[0].rel, 'certo');
+  assert.equal(b.hazards[0].promoted, 'nome');
 });
 
 test('caso reale: le barriere di Piazzale Funivia accanto alla SS39 non sono sul percorso', () => {
@@ -351,12 +358,15 @@ test('caso reale: le barriere di Piazzale Funivia accanto alla SS39 non sono sul
   // la statale passa a circa 4 m dal nodo, senza passarci sopra
   const ss39 = lineFrom([46.15684, 10.16537 + 4 / 77150], 0, 300, 25);
   const a = C.analyzeElements([nodo], new C.RouteIndex(ss39), veh);
-  assert.equal(a.hazards.length, 0);
+  assert.equal(a.hazards.length, 1);
+  assert.equal(a.hazards[0].rel, 'vicino');
+  assert.ok(Math.abs(a.hazards[0].distM - 4) < 0.5);
   // se invece il nodo è un punto della strada percorsa, il limite vale
   const sulla = lineFrom([46.15684, 10.16537], 0, 300, 25);
   const b = C.analyzeElements([nodo], new C.RouteIndex(sulla), veh);
   assert.equal(b.hazards.length, 1);
   assert.equal(b.hazards[0].severity, 'red');
+  assert.equal(b.hazards[0].rel, 'certo');
 });
 
 test('i limiti veri sul percorso restano segnalati', () => {
@@ -386,4 +396,21 @@ test('nome della strada percorsa in un punto', () => {
   const r = C.finishRoute({ coords, steps: [{ from: 0, to: 5, durS: 50, streets: 'SS39' }, { from: 5, to: 9, durS: 40, streets: 'Via Roma' }], legEnds: [0, 9], durationS: 90, flags: {}, engine: 'x' });
   assert.equal(C.streetAtAlong(r, 100), 'SS39');
   assert.equal(C.streetAtAlong(r, 700), 'Via Roma');
+});
+
+test('stessa strada: nome o sigla, con spazi e maiuscole diverse', () => {
+  assert.equal(C.sameRoad({ ref: 'SS 39' }, 'SS39'), true);
+  assert.equal(C.sameRoad({ name: 'Via dell\'Aprica' }, 'Strada Statale, via dell’Aprica'), true);
+  assert.equal(C.sameRoad({ name: 'Via Roma' }, 'Via Milano'), false);
+  assert.equal(C.sameRoad({}, 'SS39'), false);
+  assert.equal(C.sameRoad({ ref: 'SS39' }, ''), false);
+});
+
+test('ordine: prima i punti sul percorso, poi quelli vicini', () => {
+  const list = [
+    { rel: 'vicino', severity: 'red', alongStart: 10 },
+    { rel: 'certo', severity: 'amber', alongStart: 5 },
+    { rel: 'certo', severity: 'red', alongStart: 50 },
+  ].sort(C.hazardOrder);
+  assert.deepEqual(list.map((x) => x.rel + x.severity), ['certored', 'certoamber', 'vicinored']);
 });

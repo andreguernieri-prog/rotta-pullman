@@ -122,6 +122,19 @@ test('dati: data e versione della modifica nei riquadri', () => {
   assert.equal(m.highway, 'primary');
 });
 
+test('dati: ponte, galleria e livello restano nei riquadri', () => {
+  const { tiles } = build([
+    line('way', 12, [[45.48, 9.2], [45.481, 9.2]], { highway: 'primary', maxheight: '3.5', tunnel: 'yes', layer: '-1' }),
+    line('way', 13, [[45.482, 9.2], [45.483, 9.2]], { highway: 'secondary', maxweight: '7.5', bridge: 'yes', layer: '1' }),
+  ]);
+  const els = C.tileToElements(tiles.get(C.tileKey(45.48, 9.2, D.RIQUADRO)));
+  const t = els.find((e) => e.id === 12).tags, b = els.find((e) => e.id === 13).tags;
+  assert.equal(t.tunnel, 'yes');
+  assert.equal(t.layer, '-1');
+  assert.equal(b.bridge, 'yes');
+  assert.equal(b.layer, '1');
+});
+
 test('dati: conversione delle date di osmium', () => {
   assert.equal(D.isoDay(1552377600), '2019-03-12');
   assert.equal(D.isoDay('2019-03-12T08:00:00Z'), '2019-03-12');
