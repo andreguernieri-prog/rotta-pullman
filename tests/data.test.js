@@ -141,3 +141,15 @@ test('dati: conversione delle date di osmium', () => {
   assert.equal(D.isoDay(0), null);
   assert.equal(D.isoDay(undefined), null);
 });
+
+test('dati: i divieti a orario restano, non sui sentieri', () => {
+  assert.equal(D.relevantRestriction({ highway: 'secondary', 'bus:conditional': 'no @ (Mo-Fr 07:00-19:00)' }), true);
+  assert.equal(D.relevantRestriction({ highway: 'track', 'motor_vehicle:conditional': 'no @ (Nov-Apr)' }), false);
+  assert.equal(D.relevantRestriction({ highway: 'primary', 'maxweight:conditional': '3.5 @ (07:00-20:00)' }), true);
+  assert.equal(D.relevantRestriction({ highway: 'primary', 'maxweight:conditional': '44 @ (07:00-20:00)' }), false);
+  const long = 'no @ (Mo-Fr 07:00-09:00,12:00-14:00,16:00-19:00; Sa 08:00-13:00; PH off) ; destination @ (Su 08:00-12:00 AND weight>3.5) ; delivery @ (Mo-Sa 05:00-07:00)';
+  const { tiles } = build([line('way', 31, [[45.48, 9.2], [45.481, 9.2]], { highway: 'secondary', 'motor_vehicle:conditional': long, motor_vehicle: 'yes', bus: 'no' })]);
+  const el = C.tileToElements(tiles.get(C.tileKey(45.48, 9.2, D.RIQUADRO)))[0];
+  assert.equal(el.tags['motor_vehicle:conditional'], long, 'condizioni lunghe non troncate');
+  assert.equal(el.tags.motor_vehicle, 'yes');
+});

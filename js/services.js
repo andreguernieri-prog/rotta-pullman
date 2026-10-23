@@ -100,7 +100,7 @@
 
   /* ------------------------------ Percorso ------------------------------ */
   function valhallaBody(stops, veh, margin, opt) {
-    return {
+    const body = {
       locations: stops.map((s) => ({ lat: +s.lat.toFixed(6), lon: +s.lon.toFixed(6), type: 'break' })),
       costing: 'truck',
       costing_options: {
@@ -129,12 +129,21 @@
       language: 'it-IT',
       directions_type: 'maneuvers',
     };
+    // con data e ora di partenza Valhalla rispetta i divieti a orario che conosce (es. hgv:conditional)
+    if (opt.departure && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(opt.departure)) body.date_time = { type: 1, value: opt.departure.slice(0, 16) };
+    return body;
   }
 
   async function routeValhalla(stops, veh, margin, opt, signal) {
     const body = valhallaBody(stops, veh, margin, opt);
-    const url = URLS.valhalla + '/route?json=' + encodeURIComponent(JSON.stringify(body));
-    const r = await request(url, { signal }, 45000);
+    const ask = (b) => request(URLS.valhalla + '/route?json=' + encodeURIComponent(JSON.stringify(b)), { signal }, 45000);
+    let r = await ask(body);
+    const known = [442, 443, 170, 171, 172, 150, 154];
+    if (body.date_time && !r.ok && r.status >= 400 && r.status < 500 && r.status !== 429 && !(r.data && known.includes(r.data.error_code))) {
+      // data non accettata: si calcola senza orario
+      delete body.date_time;
+      r = await ask(body);
+    }
     if (!r.ok || !r.data || !r.data.trip) {
       const code = r.data && r.data.error_code;
       if (code === 442 || code === 443) {
@@ -289,6 +298,8 @@
   }
 
   const RESTRICTION_KEYS = '^(maxheight|maxheight:physical|maxwidth|maxwidth:physical|maxlength|maxweight|maxweightrating|maxaxleload)$';
+  // divieti e limiti a giorni/orari o con condizioni
+  const CONDITIONAL_KEYS = '^(' + C.COND_KEYS.join('|') + '):conditional$';
 
   function lineArg(points) {
     return points.map((p) => p[0].toFixed(6) + ',' + p[1].toFixed(6)).join(',');
@@ -313,7 +324,9 @@ ${near}
 (
   way.near[~"${RESTRICTION_KEYS}"~"."];
   way.near[~"^(hgv|bus|tourist_bus|coach)$"~"^no$"];
+  way.near[~"${CONDITIONAL_KEYS}"~"."];
   node(w.near)[~"${RESTRICTION_KEYS}"~"."];
+  node(w.near)[~"${CONDITIONAL_KEYS}"~"."];
 )->.lim;
 .lim out meta geom;
 (

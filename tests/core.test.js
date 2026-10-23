@@ -414,3 +414,130 @@ test('ordine: prima i punti sul percorso, poi quelli vicini', () => {
   ].sort(C.hazardOrder);
   assert.deepEqual(list.map((x) => x.rel + x.severity), ['certored', 'certoamber', 'vicinored']);
 });
+
+/* ------------------------- divieti a giorni e orari ------------------------- */
+const at = (y, m, d, hh, mm) => new Date(y, m - 1, d, hh, mm || 0);
+
+test('orari: giorni feriali, fasce, festivi, notte', () => {
+  const feriali = C.parseOH('Mo-Fr 07:00-19:00');
+  assert.equal(C.ohAt(feriali, at(2026, 10, 26, 8)), true); // lunedì
+  assert.equal(C.ohAt(feriali, at(2026, 10, 24, 8)), false); // sabato
+  assert.equal(C.ohAt(feriali, at(2026, 10, 26, 19, 0)), false); // alle 19 finisce
+  const punte = C.parseOH('Mo-Fr 07:00-09:00,16:00-19:00; PH off');
+  assert.equal(C.ohAt(punte, at(2026, 10, 26, 17)), true);
+  assert.equal(C.ohAt(punte, at(2026, 10, 26, 12)), false);
+  assert.equal(C.ohAt(punte, at(2026, 12, 8, 8)), false); // Immacolata, martedì
+  const festivi = C.parseOH('Su,PH 09:00-22:00');
+  assert.equal(C.ohAt(festivi, at(2026, 4, 6, 10)), true); // Pasquetta 2026
+  assert.equal(C.ohAt(festivi, at(2026, 6, 2, 10)), true); // Festa della Repubblica
+  assert.equal(C.ohAt(festivi, at(2026, 6, 3, 10)), false);
+  const notte = C.parseOH('Fr 22:00-06:00');
+  assert.equal(C.ohAt(notte, at(2026, 10, 24, 3)), true); // sabato notte, continua da venerdì
+  assert.equal(C.ohAt(notte, at(2026, 10, 24, 7)), false);
+  const altre = C.parseOH('Mo-Fr 07:00-09:00, Sa 08:00-12:00');
+  assert.equal(C.ohAt(altre, at(2026, 10, 24, 9)), true);
+  assert.equal(C.ohAt(altre, at(2026, 10, 25, 9)), false);
+});
+
+test('orari: periodi dell\'anno, alba e tramonto, formati non riconosciuti', () => {
+  assert.equal(C.ohAt(C.parseOH('Jun 15-Sep 15'), at(2026, 8, 1, 10)), true);
+  assert.equal(C.ohAt(C.parseOH('Jun 15-Sep 15'), at(2026, 9, 20, 10)), false);
+  assert.equal(C.ohAt(C.parseOH('Nov-Apr'), at(2026, 1, 10, 10)), true); // a cavallo dell'anno
+  assert.equal(C.ohAt(C.parseOH('Nov-Apr'), at(2026, 7, 10, 10)), false);
+  assert.equal(C.ohAt(C.parseOH('Dec 24-Jan 6'), at(2027, 1, 2, 10)), true);
+  assert.equal(C.ohAt(C.parseOH('2025 Jun-Sep'), at(2026, 7, 1, 10)), false);
+  assert.equal(C.ohAt(C.parseOH('sunset-sunrise'), at(2026, 7, 1, 23)), true);
+  assert.equal(C.ohAt(C.parseOH('sunset-sunrise'), at(2026, 7, 1, 12)), false);
+  assert.equal(C.ohAt(C.parseOH('sunset-sunrise'), at(2026, 7, 1, 20, 30)), '?'); // tramonto stimato: incerto
+  assert.equal(C.parseOH('Su[1] 08:00-12:00'), null);
+  assert.equal(C.parseOH('easter'), null);
+  assert.equal(C.easter(2026).getDate(), 5);
+  assert.equal(C.isHolidayIT(at(2026, 4, 25, 12)), true);
+  assert.equal(C.isHolidayIT(at(2026, 4, 24, 12)), false);
+});
+
+test('condizioni: valore @ (condizione), in italiano', () => {
+  const r = C.parseConditional('no @ (Mo-Fr 07:00-19:00 AND weight>7.5); destination @ (Sa)');
+  assert.equal(r.length, 2);
+  assert.equal(r[0].conds[0].type, 'orario');
+  assert.deepEqual([r[0].conds[1].type, r[0].conds[1].prop, r[0].conds[1].n], ['veicolo', 'peso', 7.5]);
+  assert.equal(C.parseConditional('no'), null);
+  assert.equal(C.condText('Mo-Fr 07:00-19:00; PH off'), 'lun–ven 07:00–19:00; esclusi i festivi');
+  assert.equal(C.condText('Jun 15-Sep 15 AND weight>7.5'), 'giu 15–set 15 e massa oltre 7,5 t');
+});
+
+test('divieti a orario: quando riguardano il bus e quando no', () => {
+  const bus = C.conditionalIssues({ highway: 'secondary', 'bus:conditional': 'no @ (Mo-Fr 07:00-19:00)' }, veh);
+  assert.equal(bus.timed.kind, 'orario');
+  assert.equal(bus.timed.title, 'Divieto di transito per bus in certi orari');
+  assert.equal(bus.timed.when, 'autobus: vietato lun–ven 07:00–19:00');
+  // bus ammessi esplicitamente: il divieto per i veicoli a motore non li riguarda
+  assert.equal(C.conditionalIssues({ bus: 'yes', 'motor_vehicle:conditional': 'no @ (Su 08:00-13:00)' }, veh).timed, null);
+  // limite di massa a orario: 3,5 t riguarda il bus da 19 t
+  const peso = C.conditionalIssues({ 'maxweight:conditional': '3.5 @ (07:00-20:00)' }, veh);
+  assert.equal(peso.timed.title, 'Massa massima 3,5 t in certi orari');
+  assert.equal(peso.timed.sign, 'peso');
+  // limite che il mezzo rispetta: niente
+  assert.equal(C.conditionalIssues({ 'maxweight:conditional': '44 @ (07:00-20:00)' }, veh).timed, null);
+  // condizione solo sul mezzo: è un divieto fisso, con la condizione nel dettaglio
+  const lungo = C.conditionalIssues({ 'motor_vehicle:conditional': 'no @ (length>12)' }, veh);
+  assert.equal(lungo.timed, null);
+  assert.equal(lungo.fixed[0].severity, 'red');
+  assert.match(lungo.fixed[0].detail, /lunghezza oltre 12 m/);
+  assert.equal(C.conditionalIssues({ 'motor_vehicle:conditional': 'no @ (length>15)' }, veh).fixed.length, 0);
+  // eccezione a orario su un divieto fisso
+  const ecc = C.conditionalIssues({ bus: 'no', 'bus:conditional': 'yes @ (Mo-Fr 06:00-20:00)' }, veh);
+  assert.equal(ecc.fixed.length, 0, 'il divieto fisso va nella scheda a orario');
+  assert.equal(ecc.timed.when, 'autobus: consentito lun–ven 06:00–20:00');
+});
+
+test('divieti a orario: in vigore, a ridosso, non in vigore, incerto', () => {
+  const t = C.conditionalIssues({ 'bus:conditional': 'no @ (Mo-Fr 07:00-19:00)' }, veh).timed;
+  const st = (d) => C.conditionalAt(t, veh, d.getTime());
+  assert.deepEqual([st(at(2026, 10, 26, 8)).state, st(at(2026, 10, 26, 8)).severity], ['attivo', 'red']);
+  assert.deepEqual([st(at(2026, 10, 24, 8)).state, st(at(2026, 10, 24, 8)).severity], ['non attivo', 'info']);
+  const prima = st(at(2026, 10, 26, 6, 30));
+  assert.deepEqual([prima.state, prima.after], ['ridosso', true]);
+  assert.equal(st(at(2026, 10, 26, 19, 30)).state, 'ridosso');
+  const ecc = C.conditionalIssues({ bus: 'no', 'bus:conditional': 'yes @ (Mo-Fr 06:00-20:00)' }, veh).timed;
+  assert.equal(C.conditionalAt(ecc, veh, at(2026, 10, 25, 10).getTime()).state, 'attivo'); // domenica: vietato
+  assert.equal(C.conditionalAt(ecc, veh, at(2026, 10, 26, 10).getTime()).state, 'non attivo');
+  const meteo = C.conditionalIssues({ 'access:conditional': 'no @ wet' }, veh).timed;
+  assert.equal(C.conditionalAt(meteo, veh, at(2026, 10, 26, 10).getTime()).state, 'incerto');
+  const pes = C.conditionalIssues({ 'hgv:conditional': 'no @ (Mo-Fr 07:00-19:00)' }, veh).timed;
+  assert.deepEqual([C.conditionalAt(pes, veh, at(2026, 10, 26, 8).getTime()).severity, pes.sign], ['amber', 'pesanti']);
+});
+
+test('analisi: divieto a orario sul percorso, raggruppato e con i tag per la valutazione', () => {
+  const idx = new C.RouteIndex(straightRoute());
+  const cond = { highway: 'primary', name: 'Via Roma', 'bus:conditional': 'no @ (Mo-Fr 07:00-19:00)' };
+  const els = [
+    { type: 'way', id: 21, tags: cond, geometry: [{ lat: 45.02, lon: 9 }, { lat: 45.021, lon: 9 }] },
+    { type: 'way', id: 22, tags: cond, geometry: [{ lat: 45.021, lon: 9 }, { lat: 45.022, lon: 9 }] },
+    { type: 'way', id: 23, tags: { highway: 'primary', maxheight: '3.4', 'hgv:conditional': 'no @ (Sa,Su)' }, geometry: [{ lat: 45.05, lon: 9 }, { lat: 45.051, lon: 9 }] },
+  ];
+  const a = C.analyzeElements(els, idx, veh);
+  const timed = a.hazards.filter((h) => h.kind === 'orario');
+  assert.equal(timed.length, 2);
+  assert.deepEqual(timed[0].ids, ['way/21', 'way/22']);
+  assert.equal(timed[0].cond['bus:conditional'], 'no @ (Mo-Fr 07:00-19:00)');
+  assert.ok(a.hazards.some((h) => h.kind === 'altezza'), 'il limite fisso di altezza resta');
+  assert.equal(C.hasRestrictionTags({ 'motor_vehicle:conditional': 'no @ (Su)' }), true);
+});
+
+test('accesso: vale la chiave più specifica', () => {
+  assert.deepEqual(C.accessFor({ access: 'no', bus: 'designated' }), { key: 'bus', value: 'designated' });
+  assert.equal(C.evaluateTags({ motor_vehicle: 'no' }, veh)[0].title, 'Divieto di transito');
+  assert.equal(C.evaluateTags({ access: 'no', bus: 'yes' }, veh).length, 0);
+  assert.equal(C.evaluateTags({ bus: 'no', coach: 'yes' }, veh).length, 0);
+  assert.equal(C.evaluateTags({ motor_vehicle: 'destination' }, veh).length, 0, 'transito riservato solo nella valutazione a orario');
+});
+
+test('ordine: i divieti a orario non in vigore vanno in fondo', () => {
+  const list = [
+    { rel: 'certo', severity: 'info', alongStart: 1 },
+    { rel: 'vicino', severity: 'amber', alongStart: 10 },
+    { rel: 'certo', severity: 'red', alongStart: 50 },
+  ].sort(C.hazardOrder);
+  assert.deepEqual(list.map((x) => x.severity), ['red', 'amber', 'info']);
+});

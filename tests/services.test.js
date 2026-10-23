@@ -67,3 +67,24 @@ test('overpass: le richieste partono una alla volta', async () => {
   await Promise.all([S.parkings(pts, 1500), S.corridor([[45, 9], [45.01, 9.01]]), S.parkings(pts, 800)]);
   assert.equal(f.max(), 1);
 });
+
+test('valhalla: data e ora di partenza, e calcolo senza orario se il server non le accetta', async () => {
+  const bodies = [];
+  const trip = { trip: { legs: [{ shape: '_p~iF~ps|U_ulLnnqC', maneuvers: [], summary: { length: 1, time: 60 } }], summary: { length: 1, time: 60 } } };
+  let n = 0;
+  installFetch(async (u) => {
+    bodies.push(JSON.parse(decodeURIComponent(u.split('json=')[1])));
+    return ++n === 1 ? res(400, JSON.stringify({ error_code: 162, error: 'Invalid date_time' })) : res(200, JSON.stringify(trip));
+  });
+  const veh = global.RPCore.sanitizeVehicle(global.RPCore.PRESETS[1]);
+  const stops = [{ lat: 45, lon: 9 }, { lat: 45.1, lon: 9.1 }];
+  await S.routeValhalla(stops, veh, 0.1, { vmax: 100, strictHgv: true, departure: '2026-10-26T08:00' });
+  assert.deepEqual(bodies[0].date_time, { type: 1, value: '2026-10-26T08:00' });
+  assert.equal(bodies[1].date_time, undefined);
+});
+
+test('overpass: la ricerca lungo il percorso chiede anche i divieti a orario', () => {
+  const q = S.corridorQuery([[45, 9], [45.01, 9]]);
+  assert.match(q, /:conditional\$"~"\."/);
+  assert.match(q, /motor_vehicle\|vehicle\|access\|hgv/);
+});

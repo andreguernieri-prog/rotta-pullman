@@ -25,25 +25,40 @@ const RIQUADRO = 0.25;
 
 const RESTR_KEYS = ['maxheight', 'maxheight:physical', 'maxwidth', 'maxwidth:physical', 'maxlength', 'maxweight', 'maxweightrating', 'maxaxleload'];
 const ACCESS_KEYS = ['hgv', 'bus', 'tourist_bus', 'coach'];
-const KEEP_R = RESTR_KEYS.concat(ACCESS_KEYS, ['psv', 'name', 'ref', 'bridge', 'tunnel', 'layer', 'highway',
+// divieti e limiti a giorni/orari o con condizioni (es. bus:conditional=no @ (Mo-Fr 07:00-19:00))
+const COND_TAGS = C.COND_KEYS.map((k) => k + ':conditional');
+const KEEP_R = RESTR_KEYS.concat(ACCESS_KEYS, COND_TAGS, ['motor_vehicle', 'vehicle', 'access', 'psv', 'name', 'ref', 'bridge', 'tunnel', 'layer', 'highway',
   'source', 'source:maxheight', 'source:maxweight', 'source:maxwidth', 'source:maxlength', 'source:hgv',
   'check_date', 'check_date:maxheight', 'check_date:maxweight', 'survey:date']);
 const KEEP_P = ['name', 'fee', 'capacity:bus', 'capacity:coach', 'access', 'opening_hours', 'bus', 'coach', 'tourist_bus', 'hgv', 'parking'];
 const NON_ROAD = ['amenity', 'shop', 'building', 'tourism', 'leisure', 'man_made', 'office', 'craft'];
 
-/* Tiene solo i limiti che un bus può incontrare: il più alto supera di poco i 4 m, il più pesante le 30 t */
+/* Un valore di limite può riguardare un bus? Il più alto supera di poco i 4 m, il più pesante le 30 t */
+function limitRelevant(k, v) {
+  if (/^maxheight/.test(k)) { const x = C.parseLength(v); return x === 'below_default' || (typeof x === 'number' && x < 4.6); }
+  if (/^maxwidth/.test(k)) { const x = C.parseLength(v); return typeof x === 'number' && x < 3; }
+  if (k === 'maxlength') { const x = C.parseLength(v); return typeof x === 'number' && x < 25; }
+  if (k === 'maxweight' || k === 'maxweightrating') { const x = C.parseWeight(v); return x != null && x < 40.5; }
+  if (k === 'maxaxleload') { const x = C.parseWeight(v); return x != null && x < 13; }
+  return false;
+}
+
+/* strade dove un bus non passa: i divieti a orario lì non servono */
+const NON_BUS = /^(footway|path|cycleway|bridleway|steps|track|pedestrian|corridor|proposed|construction|platform|elevator|via_ferrata)$/;
+
+/* Tiene solo i limiti che un bus può incontrare, compresi quelli a orario o con condizioni */
 function relevantRestriction(t) {
-  const h = [C.parseLength(t.maxheight), C.parseLength(t['maxheight:physical'])];
-  if (h.some((x) => x === 'below_default' || (typeof x === 'number' && x < 4.6))) return true;
-  const w = [C.parseLength(t.maxwidth), C.parseLength(t['maxwidth:physical'])];
-  if (w.some((x) => typeof x === 'number' && x < 3)) return true;
-  const L = C.parseLength(t.maxlength);
-  if (typeof L === 'number' && L < 25) return true;
-  const W = [C.parseWeight(t.maxweight), C.parseWeight(t.maxweightrating)];
-  if (W.some((x) => x != null && x < 40.5)) return true;
-  const A = C.parseWeight(t.maxaxleload);
-  if (A != null && A < 13) return true;
-  return ACCESS_KEYS.some((k) => t[k] === 'no');
+  if (RESTR_KEYS.some((k) => t[k] != null && limitRelevant(k, t[k]))) return true;
+  if (ACCESS_KEYS.some((k) => t[k] === 'no')) return true;
+  if (NON_BUS.test(t.highway || '')) return false;
+  for (const k of C.COND_KEYS) {
+    const raw = t[k + ':conditional'];
+    if (raw == null) continue;
+    if (!/^max/.test(k)) return true; // divieti di accesso: si valutano nell'app con il mezzo e l'orario
+    const rules = C.parseConditional(raw);
+    if (!rules || rules.some((r) => limitRelevant(k, r.value))) return true;
+  }
+  return false;
 }
 
 function isBusParking(t) {
@@ -53,7 +68,7 @@ function isBusParking(t) {
 
 function pick(t, keys) {
   const o = {};
-  for (const k of keys) if (t[k] != null && t[k] !== '') o[k] = String(t[k]).slice(0, 120);
+  for (const k of keys) if (t[k] != null && t[k] !== '') o[k] = String(t[k]).slice(0, /:conditional$/.test(k) ? 300 : 120);
   return o;
 }
 

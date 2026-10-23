@@ -376,6 +376,14 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 .sev { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding: 3px 7px; border-radius: 5px; }
 .sev-red-bg { background: var(--red-soft); color: var(--red); }
 .sev-amber-bg { background: var(--amber-soft); color: var(--amber); }
+.sev-info-bg { background: var(--surface-2); color: var(--muted); }
+/* divieti a giorni e orari */
+.hz-when { font-size: 14px; }
+.hz.info > span:first-child svg { opacity: .6; }
+.hz-marker.info svg { opacity: .6; filter: grayscale(.5) drop-shadow(0 1px 2px rgba(0,0,0,.45)); }
+.hz-quiet { list-style: none; border: 1px solid var(--line); border-radius: var(--r); padding: 8px 10px; }
+.hz-quiet summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+.hz-quiet details > p { margin: 4px 0 8px; }
 .none { color: var(--muted); font-size: 14px; padding: 4px 0; }
 .err-detail { display: block; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 

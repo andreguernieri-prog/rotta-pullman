@@ -35,7 +35,7 @@ function serve() {
 
 /* ---------------- servizi simulati ---------------- */
 const VIA_A1 = [[45.4860, 9.2044], [45.40, 9.33], [45.31, 9.50], [45.05, 9.70], [44.80, 10.33], [44.65, 10.93], [44.50, 11.34], [44.25, 11.30], [43.95, 11.20], [43.7629, 11.2650]];
-const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null, tomtomUrls: [], vicino: false };
+const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null, tomtomUrls: [], vicino: false, orario: false, dateTimes: [] };
 
 function densify(pts, step) {
   const out = [];
@@ -57,6 +57,7 @@ const INSTR = ['Procedi in direzione sud.', 'Svolta a destra in Viale Brianza.',
 function mockValhalla(url) {
   if (mocks.forceRouteError) return { status: 400, body: { error_code: 442, error: 'No path could be found for input', status_code: 400 } };
   const body = JSON.parse(new URL(url).searchParams.get('json'));
+  mocks.dateTimes.push(body.date_time || null);
   const locs = body.locations.map((l) => [l.lat, l.lon]);
   const legs = [];
   let all = [], totLen = 0, totTime = 0;
@@ -125,7 +126,8 @@ function mockOverpass(data) {
       sv(0.3, 160, 201, 'Area di servizio Arda'),
       sv(0.55, 150, 202, 'Area di servizio Secchia Est'),
       sv(0.56, -150, 203, 'Area di servizio Secchia Ovest'),
-    ].concat(mocks.vicino ? [Object.assign({ type: 'node', id: 7001, tags: { maxheight: '3.2', barrier: 'height_restrictor' } }, (() => { const q = offsetPoint(c, 0.45, 4); return { lat: q.lat, lon: q.lon }; })())] : []),
+    ].concat(mocks.orario ? [wayOn(c, 0.7, 4, 105, { highway: 'secondary', name: 'Via del Mercato', 'bus:conditional': 'no @ (Mo-Fr)' })] : [])
+      .concat(mocks.vicino ? [Object.assign({ type: 'node', id: 7001, tags: { maxheight: '3.2', barrier: 'height_restrictor' } }, (() => { const q = offsetPoint(c, 0.45, 4); return { lat: q.lat, lon: q.lon }; })())] : []),
   };
 }
 
@@ -629,6 +631,64 @@ async function setupRoutes(context) {
     });
     mocks.vicino = false;
     await vctx.close();
+  }
+
+  /* --- divieto a giorni e orari: in vigore o no secondo il giorno di passaggio --- */
+  {
+    const octx = await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: 'it-IT', timezoneId: 'Europe/Rome' });
+    await setupRoutes(octx);
+    mocks.orario = true;
+    mocks.dateTimes = [];
+    const q = await octx.newPage();
+    watch(q, 'orario');
+    await q.goto(base);
+    await step('divieto a orario: in vigore il lunedì, non la domenica', async () => {
+      await q.waitForFunction(() => window.__rp.state.analysis && window.__rp.state.analysis.status === 'done', null, { timeout: 30000 });
+      // il calcolo del percorso riceve data e ora di partenza
+      assert.match(String(mocks.dateTimes[0] && mocks.dateTimes[0].value), /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
+      const setDeparture = (v) => q.evaluate((val) => {
+        const el = document.querySelector('#in-departure');
+        el.value = val;
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      }, v);
+      // lunedì: il divieto vale quando passa il bus
+      await setDeparture('2030-01-14T06:00');
+      await q.waitForFunction(() => /Vietato al passaggio/.test(document.querySelector('#hazards').textContent));
+      const item = q.locator('#hazards > .hz', { hasText: 'in certi orari' });
+      assert.equal(await item.count(), 1);
+      const txt = await item.textContent();
+      assert.match(txt, /Divieto di transito per bus in certi orari/);
+      assert.match(txt, /Quando vale: autobus: vietato lun–ven/);
+      assert.match(txt, /In vigore quando passi \(lun 14 gen, \d\d:\d\d\)/);
+      assert.match(await q.textContent('#check-banner'), /^2 punti non transitabili/);
+      assert.match(await q.textContent('#check-banner'), /non per gli autobus/);
+      // domenica: non vale, finisce tra i divieti non in vigore
+      await setDeparture('2030-01-13T06:00');
+      await q.waitForFunction(() => document.querySelectorAll('#hazards .hz-quiet .hz').length === 1);
+      assert.equal(await q.locator('#hazards > .hz', { hasText: 'in certi orari' }).count(), 0);
+      assert.match(await q.textContent('#check-banner'), /^1 punto non transitabile/);
+      assert.match(await q.textContent('#check-banner'), /1 divieto a giorni e orari sul percorso non è in vigore quando passi/);
+      assert.equal(await q.locator('.hz-marker.info').count(), 1);
+      await q.click('.hz-quiet summary');
+      assert.match(await q.textContent('.hz-quiet'), /Non in vigore quando passi \(dom 13 gen/);
+      await q.locator('.hz-quiet button', { hasText: 'Mostra sulla mappa' }).click();
+      await q.waitForSelector('.hz-popup .hzpop', { timeout: 5000 });
+      const card = await q.textContent('.hz-popup .hzpop');
+      assert.match(card, /Non in vigore al passaggio/i);
+      assert.match(card, /Quando vale\s*autobus: vietato lun–ven/);
+      assert.match(card, /Ci arrivi\s*dom 13 gen/);
+      await q.waitForTimeout(700);
+      await q.screenshot({ path: path.join(OUT, '13-orario-domenica.png') });
+      await q.keyboard.press('Escape');
+      await setDeparture('2030-01-14T06:00');
+      await q.waitForFunction(() => /Vietato al passaggio/.test(document.querySelector('#hazards').textContent));
+      await q.locator('#hazards > .hz', { hasText: 'in certi orari' }).locator('button', { hasText: 'Mostra sulla mappa' }).click();
+      await q.waitForSelector('.hz-popup .hzpop', { timeout: 5000 });
+      await q.waitForTimeout(700);
+      await q.screenshot({ path: path.join(OUT, '13a-orario-lunedi.png') });
+    });
+    mocks.orario = false;
+    await octx.close();
   }
 
   /* --- tema scuro --- */

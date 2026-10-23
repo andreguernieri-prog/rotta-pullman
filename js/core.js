@@ -463,7 +463,7 @@
    * Confronta i tag di un elemento OSM con il mezzo.
    * Restituisce i problemi: severity 'red' (non transitabile) o 'amber' (da verificare).
    */
-  function evaluateTags(tags, veh) {
+  function evaluateTags(tags, veh, opts) {
     const out = [];
     if (!tags) return out;
     const h = [parseLength(tags.maxheight), parseLength(tags['maxheight:physical'])];
@@ -492,12 +492,430 @@
     if (A != null && A < veh.caricoAsse) out.push({ kind: 'asse', value: A, severity: 'red', title: `Carico per asse max ${fmtNum(A)} t`, detail: `Il mezzo ha ${fmtNum(veh.caricoAsse)} t per asse` });
 
     const busOk = YES.test(tags.tourist_bus || '') || YES.test(tags.bus || '') || YES.test(tags.coach || '') || YES.test(tags.psv || '');
-    if (tags.tourist_bus === 'no' || tags.coach === 'no' || (tags.bus === 'no' && !YES.test(tags.tourist_bus || ''))) {
-      out.push({ kind: 'bus', value: null, severity: 'red', title: 'Divieto di transito per bus', detail: tags.tourist_bus === 'no' ? 'Vietato ai bus turistici' : 'Vietato agli autobus' });
+    const acc = accessFor(tags);
+    if (acc && acc.value === 'no') {
+      const perBus = acc.key === 'tourist_bus' || acc.key === 'coach' || acc.key === 'bus';
+      out.push({ kind: 'bus', value: null, severity: 'red', title: perBus ? 'Divieto di transito per bus' : 'Divieto di transito', detail: ACCESS_DETAIL[acc.key] });
+    } else if (opts && opts.reserved && acc && RESERVED[acc.value]) {
+      out.push({ kind: 'bus', value: null, severity: 'amber', title: 'Transito riservato', detail: 'Transito ' + RESERVED[acc.value] });
     } else if (tags.hgv === 'no' && !busOk) {
       out.push({ kind: 'pesanti', value: null, severity: 'amber', title: 'Divieto per mezzi pesanti', detail: 'Verifica sul cartello se vale anche per gli autobus' });
     }
     return out;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Divieti e limiti a giorni e orari (tag OSM ":conditional")          */
+  /* ------------------------------------------------------------------ */
+  // dal più specifico al più generale: per il bus vale la prima chiave presente
+  const ACCESS_ORDER = ['tourist_bus', 'coach', 'bus', 'motor_vehicle', 'vehicle', 'access'];
+  const ACCESS_DETAIL = {
+    tourist_bus: 'Vietato ai bus turistici', coach: 'Vietato ai bus turistici', bus: 'Vietato agli autobus',
+    motor_vehicle: 'Vietato a tutti i veicoli a motore', vehicle: 'Vietato a tutti i veicoli', access: 'Vietato a tutti',
+  };
+  const RESERVED = {
+    private: 'riservato agli autorizzati', permit: 'solo con permesso', destination: 'solo per chi è diretto lì',
+    delivery: 'solo per carico e scarico', customers: 'solo per i clienti', agricultural: 'solo per mezzi agricoli', forestry: 'solo per mezzi forestali',
+  };
+  const COND_ACCESS = ACCESS_ORDER.concat(['hgv']);
+  const COND_LIMITS = ['maxheight', 'maxwidth', 'maxlength', 'maxweight', 'maxweightrating', 'maxaxleload'];
+  const COND_KEYS = COND_ACCESS.concat(COND_LIMITS);
+  const LIMIT_KIND = { maxheight: 'altezza', maxwidth: 'larghezza', maxlength: 'lunghezza', maxweight: 'peso', maxweightrating: 'peso', maxaxleload: 'asse' };
+  const SUBJECT_IT = {
+    tourist_bus: 'bus turistici', coach: 'bus turistici', bus: 'autobus', hgv: 'mezzi pesanti', motor_vehicle: 'veicoli a motore', vehicle: 'veicoli', access: 'tutti',
+    maxheight: 'altezza', maxwidth: 'larghezza', maxlength: 'lunghezza', maxweight: 'massa', maxweightrating: 'massa', maxaxleload: 'carico per asse',
+  };
+
+  /* chiave di accesso che decide per un bus turistico */
+  function accessFor(tags) {
+    for (const k of ACCESS_ORDER) if (tags[k] != null && tags[k] !== '') return { key: k, value: String(tags[k]) };
+    return null;
+  }
+  function issueCat(kind) { return kind === 'bus' || kind === 'pesanti' ? 'accesso' : kind; }
+  function keyCat(k) { return LIMIT_KIND[k] || 'accesso'; }
+
+  /* vero / falso / '?' (non si sa) */
+  function and3(a, b) { return a === false || b === false ? false : a === '?' || b === '?' ? '?' : true; }
+  function or3(a, b) { return a === true || b === true ? true : a === '?' || b === '?' ? '?' : false; }
+
+  /* divide al separatore, ignorando quelli tra parentesi o virgolette */
+  function splitTop(s, sep) {
+    const out = [];
+    let depth = 0, q = false, cur = '';
+    for (const ch of String(s)) {
+      if (ch === '"') q = !q;
+      else if (!q && ch === '(') depth++;
+      else if (!q && ch === ')') depth = Math.max(0, depth - 1);
+      if (!q && depth === 0 && ch === sep) { out.push(cur); cur = ''; continue; }
+      cur += ch;
+    }
+    out.push(cur);
+    return out.map((x) => x.trim()).filter(Boolean);
+  }
+  /* toglie le parentesi che racchiudono tutto il testo */
+  function unwrap(s) {
+    s = s.trim();
+    while (s[0] === '(') {
+      let depth = 0, end = -1;
+      for (let i = 0; i < s.length; i++) {
+        if (s[i] === '(') depth++;
+        else if (s[i] === ')') { depth--; if (depth === 0) { end = i; break; } }
+      }
+      if (end !== s.length - 1) break;
+      s = s.slice(1, -1).trim();
+    }
+    return s;
+  }
+
+  /* --- orari nel formato opening_hours (la parte usata nei divieti) --- */
+  const DAY_CODES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa']; // come Date.getDay()
+  const MONTH_CODES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const MON = '(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)';
+  const DATE_RE = new RegExp('^' + MON + '(?:\\s+(\\d{1,2})(?![:\\d]))?(?:\\s*-\\s*(?:' + MON + '(?:\\s+(\\d{1,2})(?![:\\d]))?|(\\d{1,2})(?![:\\d])))?');
+  const DAY_RE = /^(?:(Mo|Tu|We|Th|Fr|Sa|Su)(?:\s*-\s*(Mo|Tu|We|Th|Fr|Sa|Su))?|(PH|SH))(?![\w[])/;
+  const TIME_TOKEN = '(\\d{1,2}:\\d{2}|sunrise|sunset|dawn|dusk)';
+  const TIME_RE = new RegExp('^' + TIME_TOKEN + '\\s*(?:-\\s*' + TIME_TOKEN + '|(\\+))');
+  // alba e tramonto medi in Italia, ora locale, per mese (minuti dalla mezzanotte)
+  const SUNRISE = [455, 430, 395, 400, 360, 335, 345, 375, 410, 440, 420, 450];
+  const SUNSET = [1020, 1060, 1095, 1190, 1220, 1245, 1245, 1210, 1160, 1110, 1010, 1000];
+
+  function parseOHRule(str) {
+    let s = str.trim();
+    const eat = (re) => { const m = re.exec(s); if (!m) return null; s = s.slice(m[0].length).trim(); return m; };
+    const r = { years: null, dates: null, days: null, ph: false, sh: false, times: null, off: false, unknown: false };
+    let m;
+    if (eat(/^24\/7/)) { /* sempre */ }
+    if ((m = eat(/^(\d{4})(?:\s*-\s*(\d{4}))?(?=\s|$)/))) r.years = [+m[1], +(m[2] || m[1])];
+    while ((m = eat(DATE_RE))) {
+      const m1 = MONTH_CODES.indexOf(m[1]) + 1, d1 = m[2] ? +m[2] : null;
+      const m2 = m[3] ? MONTH_CODES.indexOf(m[3]) + 1 : m1;
+      const d2 = m[4] ? +m[4] : m[5] ? +m[5] : m[3] ? 31 : d1 != null ? d1 : 31;
+      (r.dates = r.dates || []).push([m1 * 100 + (d1 || 1), m2 * 100 + d2]);
+      if (!eat(/^,/)) break;
+    }
+    while ((m = eat(DAY_RE))) {
+      if (m[3] === 'PH') r.ph = true;
+      else if (m[3] === 'SH') r.sh = true;
+      else {
+        r.days = r.days || new Set();
+        const a = DAY_CODES.indexOf(m[1]), b = m[2] ? DAY_CODES.indexOf(m[2]) : a;
+        for (let i = a; ; i = (i + 1) % 7) { r.days.add(i); if (i === b) break; }
+      }
+      if (!eat(/^,/)) break;
+    }
+    while ((m = eat(TIME_RE))) {
+      const t = (x) => (/:/.test(x) ? (() => { const [hh, mm] = x.split(':').map(Number); return hh * 60 + mm; })() : x);
+      (r.times = r.times || []).push([t(m[1]), m[3] ? 24 * 60 : t(m[2])]);
+      if (!eat(/^,/)) break;
+    }
+    if ((m = eat(/^(off|closed|open|unknown)\b/i))) {
+      const mod = m[1].toLowerCase();
+      r.off = mod === 'off' || mod === 'closed';
+      r.unknown = mod === 'unknown';
+    }
+    return s ? null : r; // testo non riconosciuto
+  }
+
+  function parseOH(str) {
+    const s = String(str).replace(/"[^"]*"/g, ' ').trim();
+    if (!s) return null;
+    const rules = [];
+    for (const part of s.split(/\s*(?:;|\|\|)\s*/)) {
+      if (!part) continue;
+      // "Mo-Fr 07:00-09:00, Sa 08:00-12:00": la virgola dopo un orario apre una regola aggiuntiva
+      const sub = part.split(/(?<=\d|off|closed)\s*,\s*(?=(?:Mo|Tu|We|Th|Fr|Sa|Su|PH|SH|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b)/);
+      sub.forEach((x, i) => {
+        const r = parseOHRule(x);
+        if (r) { r.additional = i > 0; rules.push(r); } else rules.push(null);
+      });
+    }
+    return rules.length && rules.every(Boolean) ? { rules } : null;
+  }
+
+  /* festività nazionali italiane */
+  function easter(y) {
+    const a = y % 19, b = Math.floor(y / 100), c = y % 100, d = Math.floor(b / 4), e = b % 4;
+    const f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30;
+    const i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451);
+    const month = Math.floor((h + l - 7 * m + 114) / 31), day = ((h + l - 7 * m + 114) % 31) + 1;
+    return new Date(y, month - 1, day);
+  }
+  const FESTE = ['1-1', '1-6', '4-25', '5-1', '6-2', '8-15', '11-1', '12-8', '12-25', '12-26'];
+  function isHolidayIT(d) {
+    if (FESTE.includes((d.getMonth() + 1) + '-' + d.getDate())) return true;
+    const e = easter(d.getFullYear());
+    const lun = new Date(e.getFullYear(), e.getMonth(), e.getDate() + 1);
+    return [e, lun].some((x) => x.getMonth() === d.getMonth() && x.getDate() === d.getDate());
+  }
+
+  function dayMatch(r, d) {
+    if (r.years && (d.getFullYear() < r.years[0] || d.getFullYear() > r.years[1])) return false;
+    if (r.dates) {
+      const md = (d.getMonth() + 1) * 100 + d.getDate();
+      if (!r.dates.some(([a, b]) => (a <= b ? md >= a && md <= b : md >= a || md <= b))) return false;
+    }
+    if (!r.days && !r.ph && !r.sh) return true;
+    if (r.days && r.days.has(d.getDay())) return true;
+    if (r.ph && isHolidayIT(d)) return true;
+    return r.sh ? '?' : false;
+  }
+
+  /* minuti dalla mezzanotte di d dentro una delle fasce della regola? alba e tramonto sono stimati */
+  function timeIn(r, mins, d) {
+    if (!r.times) return mins < 1440;
+    const mo = d.getMonth();
+    const ev = { sunrise: SUNRISE[mo], sunset: SUNSET[mo], dawn: SUNRISE[mo] - 30, dusk: SUNSET[mo] + 30 };
+    let res = false;
+    for (const [a0, b0] of r.times) {
+      const approx = typeof a0 === 'string' || typeof b0 === 'string';
+      const a = typeof a0 === 'string' ? ev[a0] : a0;
+      let b = typeof b0 === 'string' ? ev[b0] : b0;
+      if (b <= a) b += 1440;
+      let hit = mins >= a && mins < b;
+      if (approx && (Math.abs(mins - a) < 60 || Math.abs(mins - b) < 60)) hit = '?';
+      res = or3(res, hit);
+    }
+    return res;
+  }
+
+  /* la fascia oraria è in vigore alla data d? vero / falso / '?' */
+  function ohAt(oh, d) {
+    const mins = d.getHours() * 60 + d.getMinutes();
+    const prev = new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1, 12);
+    let res = false, unk = false;
+    for (const r of oh.rules) {
+      const today = dayMatch(r, d);
+      // fasce che passano la mezzanotte: "Fr 22:00-06:00" vale anche sabato fino alle 6
+      const hit = or3(and3(today, timeIn(r, mins, d)), and3(dayMatch(r, prev), timeIn(r, mins + 1440, prev)));
+      if (r.unknown) { if (hit !== false) unk = true; continue; }
+      if (r.off) { if (hit === true || (today === true && !r.times)) res = false; else if (hit === '?') unk = true; continue; }
+      if (!r.additional && today === true) res = hit === true;
+      else if (hit === true) res = true;
+      if (hit === '?') unk = true;
+    }
+    return res === true ? true : unk ? '?' : false;
+  }
+
+  /* --- condizioni: "valore @ (condizione)" separati da ";" --- */
+  const VEH_PROP = { weight: 'peso', maxweight: 'peso', length: 'lunghezza', height: 'altezza', width: 'larghezza', axleload: 'caricoAsse', axles: 'assi' };
+  function parseCond(c) {
+    c = unwrap(c);
+    const m = /^(weight|maxweight|length|height|width|axleload|axles)\s*(<=|>=|<|>|=)\s*([\d.,]+)\s*(t|kg|m)?$/i.exec(c);
+    if (m) {
+      let n = parseFloat(m[3].replace(',', '.'));
+      if ((m[4] || '').toLowerCase() === 'kg') n /= 1000;
+      return { type: 'veicolo', prop: VEH_PROP[m[1].toLowerCase()], op: m[2], n, text: c };
+    }
+    const oh = parseOH(c);
+    return oh ? { type: 'orario', oh, text: c } : { type: 'altro', text: c };
+  }
+
+  const condCache = new Map();
+  function parseConditional(v) {
+    if (v == null || v === '') return null;
+    const key = String(v);
+    if (condCache.has(key)) return condCache.get(key);
+    let rules = [];
+    for (const part of splitTop(key, ';')) {
+      let depth = 0, at = -1;
+      for (let i = 0; i < part.length; i++) {
+        if (part[i] === '(') depth++;
+        else if (part[i] === ')') depth--;
+        else if (part[i] === '@' && depth === 0) { at = i; break; }
+      }
+      if (at < 0) { rules = null; break; }
+      const value = part.slice(0, at).trim();
+      const cond = unwrap(part.slice(at + 1));
+      if (!value || !cond) { rules = null; break; }
+      rules.push({ value, conds: cond.split(/\s+AND\s+/i).map(parseCond), text: cond });
+    }
+    if (rules && !rules.length) rules = null;
+    if (condCache.size > 2000) condCache.clear();
+    condCache.set(key, rules);
+    return rules;
+  }
+
+  function vehCond(c, veh) {
+    const x = veh[c.prop];
+    if (typeof x !== 'number') return '?';
+    switch (c.op) {
+      case '>': return x > c.n;
+      case '>=': return x >= c.n;
+      case '<': return x < c.n;
+      case '<=': return x <= c.n;
+      default: return x === c.n;
+    }
+  }
+
+  /*
+   * Tag in vigore: applica le regole condizionali la cui condizione è vera.
+   * timeFn(cond, rule) dice se una condizione di orario (o di altro tipo) è vera: true / false / '?'.
+   */
+  function effectiveTags(tags, veh, timeFn) {
+    const eff = Object.assign({}, tags);
+    let unknown = false;
+    for (const k of COND_KEYS) {
+      const raw = tags[k + ':conditional'];
+      if (raw == null) continue;
+      const rules = parseConditional(raw);
+      if (!rules) { unknown = true; continue; }
+      let val = null, unk = false;
+      for (const r of rules) {
+        let st = true;
+        for (const c of r.conds) st = and3(st, c.type === 'veicolo' ? vehCond(c, veh) : timeFn(c, r));
+        if (st === true) { val = r.value; unk = false; } else if (st === '?') unk = true;
+      }
+      if (val != null) eff[k] = val;
+      if (unk) unknown = true;
+    }
+    return { tags: eff, unknown };
+  }
+
+  /* chiavi condizionali che dipendono da orari o da condizioni non legate al mezzo */
+  function timedKeys(tags) {
+    const out = [];
+    for (const k of COND_KEYS) {
+      const rules = tags[k + ':conditional'] != null ? parseConditional(tags[k + ':conditional']) : undefined;
+      if (rules === undefined) continue;
+      if (!rules || rules.some((r) => r.conds.some((c) => c.type !== 'veicolo'))) out.push(k);
+    }
+    return out;
+  }
+
+  function hasConditional(tags) {
+    for (const k of COND_KEYS) if (tags[k + ':conditional'] != null) return true;
+    return false;
+  }
+
+  /* testo della condizione in italiano */
+  const IT_DAYS = { Mo: 'lun', Tu: 'mar', We: 'mer', Th: 'gio', Fr: 'ven', Sa: 'sab', Su: 'dom', PH: 'festivi', SH: 'vacanze scolastiche' };
+  const IT_MONTHS = { Jan: 'gen', Feb: 'feb', Mar: 'mar', Apr: 'apr', May: 'mag', Jun: 'giu', Jul: 'lug', Aug: 'ago', Sep: 'set', Oct: 'ott', Nov: 'nov', Dec: 'dic' };
+  const PROP_IT = { weight: 'massa', maxweight: 'massa', length: 'lunghezza', height: 'altezza', width: 'larghezza', axleload: 'carico per asse', axles: 'assi' };
+  function condText(c) {
+    return String(c).replace(/[()]/g, '')
+      .replace(/\b(weight|maxweight|length|height|width|axleload|axles)\s*(<=|>=|<|>|=)\s*([\d.,]+)\s*(t|kg|m)?/gi, (m0, p, op, n, u) => {
+        const P = p.toLowerCase();
+        const unit = P === 'axles' ? '' : /weight|axleload/.test(P) ? (u && u.toLowerCase() === 'kg' ? ' kg' : ' t') : ' m';
+        return `${PROP_IT[P]} ${op[0] === '>' ? 'oltre' : op[0] === '<' ? 'fino a' : ''} ${fmtNum(parseFloat(n.replace(',', '.')))}${unit}`.replace(/\s+/g, ' ');
+      })
+      .replace(/\bAND\b/gi, 'e')
+      .replace(/\bPH\s+(off|closed)\b/g, 'esclusi i festivi')
+      .replace(/\b(Mo|Tu|We|Th|Fr|Sa|Su|PH|SH)\b/g, (x) => IT_DAYS[x])
+      .replace(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b/g, (x) => IT_MONTHS[x])
+      .replace(/\bsunrise\b|\bdawn\b/g, 'alba').replace(/\bsunset\b|\bdusk\b/g, 'tramonto')
+      .replace(/\b(off|closed)\b/g, 'escluso').replace(/\bwet\b/g, 'con fondo bagnato').replace(/\bsnow\b/g, 'con neve')
+      .replace(/24\/7/g, 'sempre')
+      .replace(/([\da-z])-(?=[\da-z])/g, '$1–')
+      .replace(/\s*;\s*/g, '; ').replace(/,(?=[^\s\d])/g, ', ')
+      .trim();
+  }
+  function valueText(k, v) {
+    if (LIMIT_KIND[k]) {
+      const n = /weight|axle/.test(k) ? parseWeight(v) : parseLength(v);
+      return typeof n === 'number' ? `max ${fmtNum(n)} ${/weight|axle/.test(k) ? 't' : 'm'}` : String(v);
+    }
+    if (v === 'no') return 'vietato';
+    if (YES.test(v)) return 'consentito';
+    return RESERVED[v] || String(v);
+  }
+  /* "autobus: vietato lun–ven 07:00–19:00 · massa: max 3,5 t 07:00–20:00" */
+  function conditionalWhen(tags, keys) {
+    const parts = [];
+    for (const k of keys) {
+      const raw = tags[k + ':conditional'];
+      const rules = parseConditional(raw);
+      if (!rules) { parts.push(`${SUBJECT_IT[k]}: ${raw}`); continue; }
+      parts.push(`${SUBJECT_IT[k]}: ` + rules.map((r) => `${valueText(k, r.value)} ${condText(r.text)}`).join('; '));
+    }
+    return parts.join(' · ');
+  }
+
+  const COND_EXTRA = ['psv', 'maxheight:physical', 'maxwidth:physical'];
+  function condTagsOf(tags) {
+    const o = {};
+    for (const k of COND_KEYS) {
+      if (tags[k] != null) o[k] = tags[k];
+      if (tags[k + ':conditional'] != null) o[k + ':conditional'] = tags[k + ':conditional'];
+    }
+    for (const k of COND_EXTRA) if (tags[k] != null) o[k] = tags[k];
+    return o;
+  }
+
+  /*
+   * Problemi di un elemento con tag condizionali.
+   * fixed: problemi sempre validi (limiti fissi e condizioni sul solo mezzo);
+   * timed: divieto o limite che vale solo in certi giorni/orari o condizioni, se può riguardare il mezzo.
+   */
+  function conditionalIssues(tags, veh) {
+    const keys = timedKeys(tags);
+    const cats = new Set(keys.map(keyCat));
+    const fixedEff = effectiveTags(tags, veh, () => false);
+    const fixed = evaluateTags(fixedEff.tags, veh).filter((i) => !cats.has(issueCat(i.kind)));
+    // divieti che dipendono solo dal mezzo (es. "no @ (length>12)"): si aggiunge la condizione al dettaglio
+    const vehKeys = COND_KEYS.filter((k) => tags[k + ':conditional'] != null && !keys.includes(k));
+    for (const i of fixed) {
+      const own = vehKeys.filter((k) => keyCat(k) === issueCat(i.kind));
+      if (own.length) i.detail += ' · ' + conditionalWhen(tags, own);
+    }
+    if (!keys.length) return { fixed, timed: null };
+    // scenari: nessuna regola a orario attiva, poi ciascuna da sola
+    const scen = [() => false];
+    for (const k of keys) for (const r of parseConditional(tags[k + ':conditional']) || []) scen.push((c, rule) => rule === r);
+    let worst = null;
+    for (const fn of scen) {
+      const eff = effectiveTags(tags, veh, fn);
+      for (const i of evaluateTags(eff.tags, veh, { reserved: true })) {
+        if (!cats.has(issueCat(i.kind))) continue;
+        if (!worst || (i.severity === 'red' && worst.severity !== 'red')) worst = i;
+      }
+    }
+    const unparsable = keys.some((k) => !parseConditional(tags[k + ':conditional']));
+    if (!worst && !unparsable) return { fixed, timed: null };
+    const hasTime = keys.some((k) => (parseConditional(tags[k + ':conditional']) || []).some((r) => r.conds.some((c) => c.type === 'orario')));
+    let base = worst, title;
+    if (worst) title = worst.title + (hasTime ? ' in certi orari' : ' con condizioni');
+    else {
+      // condizione scritta in un formato che l'app non sa leggere: si mostra com'è
+      const lim = keys.map((k) => LIMIT_KIND[k]).find(Boolean);
+      base = { kind: lim || 'bus', value: null };
+      title = lim ? 'Limite con condizioni da leggere' : 'Divieto con condizioni da leggere';
+    }
+    return {
+      fixed,
+      timed: {
+        kind: 'orario', sign: base.kind, value: base.value, severity: 'amber', title,
+        when: conditionalWhen(tags, keys),
+        detail: 'Vale: ' + conditionalWhen(tags, keys),
+        cats: Array.from(cats), cond: condTagsOf(tags),
+      },
+    };
+  }
+
+  /*
+   * Il divieto a orario è in vigore quando passa il mezzo (ms)?
+   * state: 'attivo' | 'ridosso' (entro un'ora) | 'incerto' | 'non attivo'
+   */
+  function conditionalAt(hz, veh, ms) {
+    if (ms == null || !hz.cond) return { state: 'incerto', severity: 'amber' };
+    const cats = new Set(hz.cats);
+    const at = (t) => {
+      const d = new Date(t);
+      const e = effectiveTags(hz.cond, veh, (c) => (c.type === 'orario' ? ohAt(c.oh, d) : '?'));
+      return { iss: evaluateTags(e.tags, veh, { reserved: true }).filter((i) => cats.has(issueCat(i.kind))), unknown: e.unknown };
+    };
+    const now = at(ms);
+    if (now.iss.length) {
+      const red = now.iss.find((i) => i.severity === 'red');
+      return { state: 'attivo', severity: red ? 'red' : 'amber', issue: red || now.iss[0] };
+    }
+    if (now.unknown) return { state: 'incerto', severity: 'amber' };
+    for (let k = 1; k <= 6; k++) {
+      for (const s of [1, -1]) {
+        const x = at(ms + s * k * 10 * 60e3);
+        if (x.iss.length) return { state: 'ridosso', severity: 'amber', minutes: k * 10, after: s > 0, issue: x.iss[0] };
+      }
+    }
+    return { state: 'non attivo', severity: 'info' };
   }
 
   /* ------------------------------------------------------------------ */
@@ -606,6 +1024,15 @@
         return 'TomTom, che raccoglie i limiti con veicoli propri, evita questo tratto con le dimensioni del tuo mezzo ma lo percorre con un\'auto: probabilmente c\'è un limite che OpenStreetMap non riporta (ponte basso, strettoia, divieto). Controlla con Street View; se è confermato, ' + evita.charAt(0).toLowerCase() + evita.slice(1);
       case 'pesanti':
         return 'Su OpenStreetMap questo divieto si usa di solito per il cartello con il camion, che vale per i veicoli che trasportano merci e non per gli autobus. Se sul cartello c\'è solo il camion, il bus può passare; se c\'è un limite di peso o il simbolo dell\'autobus, no. Controlla il cartello con Street View.';
+      case 'orario': {
+        const st = hz.stato && hz.stato.state;
+        const evitaMin = evita.charAt(0).toLowerCase() + evita.slice(1);
+        const pes = hz.sign === 'pesanti' ? ' Il divieto è per i mezzi pesanti: se sul cartello c\'è solo il camion, di solito non vale per gli autobus.' : '';
+        if (st === 'attivo') return 'Quando passi il divieto è in vigore. Cambia l\'orario di partenza oppure, ' + evitaMin + pes;
+        if (st === 'ridosso') return 'Passi a ridosso dell\'orario del divieto e i tempi sono stimati (traffico, soste). Anticipa o posticipa la partenza oppure, ' + evitaMin + pes;
+        if (st === 'non attivo') return 'Quando passi il divieto non è in vigore. Se cambi giorno o orario di partenza l\'app ricontrolla; sul posto segui comunque il cartello.';
+        return 'Non è possibile stabilire se il divieto vale al tuo passaggio: la condizione è scritta in un formato non standard o dipende dal meteo. Leggila e controlla il cartello con Street View.' + pes;
+      }
       default:
         return 'Controlla il punto con Street View prima di partire.';
     }
@@ -614,7 +1041,7 @@
   function hasRestrictionTags(tags) {
     if (!tags) return false;
     return ['maxheight', 'maxheight:physical', 'maxwidth', 'maxwidth:physical', 'maxlength', 'maxweight', 'maxweightrating', 'maxaxleload']
-      .some((k) => tags[k] != null) || ['hgv', 'bus', 'tourist_bus', 'coach'].some((k) => tags[k] === 'no');
+      .some((k) => tags[k] != null) || ['hgv', 'bus', 'tourist_bus', 'coach'].some((k) => tags[k] === 'no') || hasConditional(tags);
   }
 
   /* Una via OSM corre lungo il percorso, lo attraversa o nessuna delle due? */
@@ -720,10 +1147,12 @@
   }
 
   /* ordine dei punti: prima quelli sul percorso, poi i non transitabili, poi per posizione */
+  /* prima i punti sul percorso, poi quelli vicini, in fondo i divieti a orario non in vigore al passaggio */
+  const SEV_RANK = { red: 0, amber: 1, info: 2 };
   function hazardOrder(a, b) {
-    const ra = a.rel === 'vicino' ? 1 : 0, rb = b.rel === 'vicino' ? 1 : 0;
-    if (ra !== rb) return ra - rb;
-    if (a.severity !== b.severity) return a.severity === 'red' ? -1 : 1;
+    const ga = a.severity === 'info' ? 2 : a.rel === 'vicino' ? 1 : 0, gb = b.severity === 'info' ? 2 : b.rel === 'vicino' ? 1 : 0;
+    if (ga !== gb) return ga - gb;
+    if (a.severity !== b.severity) return (SEV_RANK[a.severity] || 0) - (SEV_RANK[b.severity] || 0);
     return a.alongStart - b.alongStart;
   }
 
@@ -798,7 +1227,11 @@
         promoted = 'nome';
       }
 
-      const issues = evaluateTags(tags, veh);
+      let issues;
+      if (hasConditional(tags)) {
+        const ci = conditionalIssues(tags, veh);
+        issues = ci.timed ? ci.fixed.concat([ci.timed]) : ci.fixed;
+      } else issues = evaluateTags(tags, veh);
       if (rel.onRoute) {
         if (!rel.vicino) checked++;
         for (const is of issues) raw.push(Object.assign({}, is, {
@@ -840,7 +1273,7 @@
     raw.sort((a, b) => a.alongStart - b.alongStart);
     const hazards = [];
     for (const h of raw) {
-      const key = h.kind + '|' + h.severity + '|' + h.title + '|' + h.rel;
+      const key = h.kind + '|' + h.severity + '|' + h.title + '|' + h.rel + '|' + (h.when || '');
       const prev = hazards.slice().reverse().find((x) => x._key === key);
       if (prev && h.alongStart - prev.alongEnd < 250) {
         prev.alongEnd = Math.max(prev.alongEnd, h.alongEnd);
@@ -1204,7 +1637,8 @@
     PRESETS, LIMITS, RULES, sanitizeVehicle,
     haversine, bearing, decodePolyline, encodePolyline, simplify, RouteIndex,
     buildCumTime, splitByDistance, normalizeValhalla, streetAtAlong, normalizeOrs, finishRoute, timeAtAlong, alongAtTime,
-    parseLength, parseWeight, evaluateTags, hazardAdvice, hasRestrictionTags, wayNear, sameRoad, hazardOrder, osmMeta, sourceLabel, hazardDoubts, compareRoutes, wayRelation, analyzeElements,
+    parseLength, parseWeight, evaluateTags, hazardAdvice, accessFor,
+    parseConditional, parseOH, ohAt, isHolidayIT, easter, effectiveTags, hasConditional, conditionalIssues, conditionalAt, condText, COND_KEYS, hasRestrictionTags, wayNear, sameRoad, hazardOrder, osmMeta, sourceLabel, hazardDoubts, compareRoutes, wayRelation, analyzeElements,
     planTrip, fmtDur, fmtDist, fmtClock, fmtNum, stopLetter, parseCoords,
     buildGpx, encodeShare, decodeShare, normName, matchPermit, groupPermits,
     tileKey, tilesAround, tilesForCoords, pointInRings, coordsCovered, tileToElements,

@@ -120,7 +120,8 @@
 
   const dec1 = (v) => C.fmtNum(v, Number.isInteger(v) ? 1 : undefined);
 
-  function signSVG(kind, text) {
+  const CLOCK_BADGE = '<g><circle cx="77" cy="77" r="20" fill="#fff" stroke="#111" stroke-width="5"/><path d="M77 65v13l8 5" fill="none" stroke="#111" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></g>';
+  function signSVG(kind, text, clock) {
     const ring = '<circle class="ring" cx="50" cy="50" r="43" fill="#fff" stroke="#c8102e" stroke-width="12"/>';
     const len = String(text || '').length;
     const fs = len >= 5 ? 23 : len === 4 ? 27 : 31;
@@ -145,10 +146,13 @@
       case 'pesanti':
         inner = '<rect x="24" y="38" width="32" height="22" fill="#111"/><path d="M57 45h10l7 8v7H57z" fill="#111"/><circle cx="33" cy="62" r="5" fill="#111" stroke="#fff" stroke-width="2"/><circle cx="66" cy="62" r="5" fill="#111" stroke="#fff" stroke-width="2"/>';
         break;
+      case 'transito':
+        inner = ''; // cerchio rosso vuoto: divieto di transito
+        break;
       default:
         inner = t(60, fs);
     }
-    return `<svg viewBox="0 0 100 100" role="img" aria-hidden="true">${ring}${inner}</svg>`;
+    return `<svg viewBox="0 0 100 100" role="img" aria-hidden="true">${ring}${inner}${clock ? CLOCK_BADGE : ''}</svg>`;
   }
 
   const DANGER_SVG = '<svg viewBox="0 0 100 100" role="img" aria-hidden="true"><path d="M50 8 94 88H6z" fill="#fff" stroke="#c8102e" stroke-width="10" stroke-linejoin="round"/><path d="M50 36v26" stroke="#111" stroke-width="9" stroke-linecap="round"/><circle cx="50" cy="74" r="5.5" fill="#111"/></svg>';
@@ -156,15 +160,29 @@
   function hazardSign(hz) {
     const v = hz.value;
     if (hz.kind === 'tomtom') return DANGER_SVG;
-    switch (hz.kind) {
-      case 'altezza': return signSVG('altezza', v != null ? dec1(v) : '?');
-      case 'larghezza': return signSVG('larghezza', dec1(v));
-      case 'lunghezza': return signSVG('lunghezza', C.fmtNum(v));
-      case 'peso': return signSVG('peso', C.fmtNum(v) + 't');
-      case 'asse': return signSVG('asse', C.fmtNum(v) + 't');
-      case 'bus': return signSVG('bus');
-      default: return signSVG('pesanti');
+    const clock = hz.kind === 'orario';
+    const kind = clock ? hz.sign : hz.kind;
+    switch (kind) {
+      case 'altezza': return signSVG('altezza', v != null ? dec1(v) : '?', clock);
+      case 'larghezza': return signSVG('larghezza', v != null ? dec1(v) : '?', clock);
+      case 'lunghezza': return signSVG('lunghezza', v != null ? C.fmtNum(v) : '?', clock);
+      case 'peso': return signSVG('peso', v != null ? C.fmtNum(v) + 't' : '?', clock);
+      case 'asse': return signSVG('asse', v != null ? C.fmtNum(v) + 't' : '?', clock);
+      case 'bus': return signSVG(/per bus/.test(hz.title) ? 'bus' : 'transito', '', clock);
+      default: return signSVG('pesanti', '', clock);
     }
+  }
+
+  /* etichetta della gravità; per i divieti a orario dice se è in vigore al passaggio */
+  function sevLabel(hz) {
+    if (hz.kind === 'orario') {
+      const st = hz.stato && hz.stato.state;
+      if (st === 'attivo') return hz.severity === 'red' ? 'Vietato al passaggio' : 'In vigore al passaggio';
+      if (st === 'ridosso') return 'A ridosso dell\'orario';
+      if (st === 'non attivo') return 'Non in vigore al passaggio';
+      return 'Da verificare';
+    }
+    return hz.severity === 'red' ? 'Non transitabile' : 'Da verificare';
   }
 
   function arrowSVG(icon) {
@@ -851,7 +869,7 @@
     setBusy(true);
     try {
       const veh = Object.assign({}, state.vehicle);
-      const opt = Object.assign({}, state.options);
+      const opt = Object.assign({}, state.options, { departure: state.departure });
       const r = opt.engine === 'ors'
         ? await API.routeOrs(valid, veh, state.margin, opt, opt.orsKey, signal)
         : await API.routeValhalla(valid, veh, state.margin, opt, signal);
@@ -1041,7 +1059,11 @@
     const services = (state.analysis && state.analysis.services) || [];
     state.plan = C.planTrip({ stopsT: r.legT, dwell, departureMs: depMs(), mode: state.breakMode, services });
     drawBreaks();
-    if (!$('#res').hidden) { renderSummary(); renderTimeline(); renderMini(); }
+    if (state.analysis && state.analysis.hazards) drawHazards();
+    if (!$('#res').hidden) {
+      renderSummary(); renderTimeline(); renderMini();
+      if (state.analysis && state.analysis.hazards) { renderCheck(); renderHazards(); }
+    }
   }
 
   /* ------------------------------------------------------------------ */
@@ -1065,8 +1087,9 @@
     hazardMarkers.clear();
     for (const hz of allHazards()) {
       const maybe = hz.rel === 'vicino';
+      const info = hz.severity === 'info';
       const icon = L.divIcon({ className: '', html: `<div class="hz-marker ${hz.severity}${maybe ? ' maybe' : ''}">${hazardSign(hz)}</div>`, iconSize: [30, 30], iconAnchor: [15, 15] });
-      const mk = L.marker([hz.lat, hz.lon], { icon, zIndexOffset: maybe ? 400 : hz.severity === 'red' ? 600 : 500, title: hz.title + (maybe ? ' (forse non sul percorso)' : '') })
+      const mk = L.marker([hz.lat, hz.lon], { icon, zIndexOffset: info ? 300 : maybe ? 400 : hz.severity === 'red' ? 600 : 500, title: hz.title + (maybe ? ' (forse non sul percorso)' : info ? ' (non in vigore al passaggio)' : '') })
         .on('click', () => openHazardPopup(hz))
         .addTo(lg.hazards);
       hazardMarkers.set(hz.ids[0], mk);
@@ -1199,12 +1222,13 @@
     if (isOsm) rows.push(['Strada del limite', hz.name || 'senza nome']);
     if (hz.rel === 'vicino' && hz.distM != null) rows.push(['Distanza dal percorso', `${Math.max(1, Math.round(hz.distM))} m`]);
     rows.push(['Posizione', hazardKm(hz) + ' dalla partenza'], ['Vicino a', near]);
-    if (eta) rows.push(['Ci arrivi', 'verso le ' + C.fmtClock(eta, depMs())]);
+    if (hz.kind === 'orario') rows.push(['Quando vale', hz.when]);
+    if (eta) rows.push(['Ci arrivi', hz.kind === 'orario' ? passText(eta) : 'verso le ' + C.fmtClock(eta, depMs())]);
     if (span > 150) rows.push(['Tratto', C.fmtDist(span)]);
     return h('div', { class: 'hzpop' },
       h('div', { class: 'hzpop-head' },
         h('span', { class: hz.rel === 'vicino' ? 'maybe' : null, svg: hazardSign(hz) }),
-        h('span', null, h('b', { text: hz.title }), h('span', { class: `sev sev-${hz.severity}-bg`, text: hz.severity === 'red' ? 'Non transitabile' : 'Da verificare' }),
+        h('span', null, h('b', { text: hz.title }), h('span', { class: `sev sev-${hz.severity}-bg`, text: sevLabel(hz) }),
           hz.rel === 'vicino' ? h('span', { class: 'maybe-tag', text: 'Forse non sul percorso' }) : null)),
       h('p', { text: hz.detail }),
       h('dl', null, rows.flatMap(([k, v]) => [h('dt', { text: k }), v.nodeType ? v : h('dd', { text: v })])),
@@ -1324,6 +1348,12 @@
     const tt = state.tomtom && state.tomtom.status === 'done' ? state.tomtom.cmp : null;
     const out = base.map((hz) => {
       const o = Object.assign({}, hz);
+      if (o.kind === 'orario') {
+        const ms = clockAtAlong(o.alongStart);
+        o.stato = C.conditionalAt(o, state.route.vehicle, ms);
+        o.severity = o.stato.severity;
+        o.detail = orarioText(o.stato, ms);
+      }
       if (tt) o.tomtom = tt.verdict(hz.alongStart, hz.alongEnd);
       o.decisione = decisionOf(hz);
       if (o.decisione === 'si' && o.rel === 'vicino') { o.rel = 'certo'; o.confermato = true; }
@@ -1345,6 +1375,21 @@
     out.sort(C.hazardOrder);
     return out;
   }
+  /* "sab 24 ott, 08:32" */
+  function passText(ms) {
+    const d = new Date(ms);
+    return d.toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short' }) + ', ' + C.fmtClock(ms);
+  }
+  function orarioText(st, ms) {
+    if (ms == null) return 'Orario di passaggio non disponibile: controlla quando vale il divieto.';
+    const when = passText(ms);
+    switch (st.state) {
+      case 'attivo': return `In vigore quando passi (${when}).`;
+      case 'ridosso': return st.after ? `Passi ${when}: il divieto entra in vigore meno di un'ora dopo.` : `Passi ${when}: il divieto è finito meno di un'ora prima.`;
+      case 'non attivo': return `Non in vigore quando passi (${when}).`;
+      default: return `Non si può stabilire se vale quando passi (${when}).`;
+    }
+  }
   function allHazards() { return hazardsWithStatus().filter((hz) => hz.decisione !== 'no'); }
   function excludedHazards() { return hazardsWithStatus().filter((hz) => hz.decisione === 'no'); }
 
@@ -1352,12 +1397,14 @@
     const a = state.analysis;
     const ttDone = state.tomtom && state.tomtom.status === 'done';
     if ((!a || !a.hazards) && !ttDone) return null;
-    const list = allHazards();
+    const all = allHazards();
+    const list = all.filter((x) => x.severity !== 'info');
     const sure = list.filter((x) => x.rel !== 'vicino');
     return {
       red: sure.filter((x) => x.severity === 'red').length,
       amber: sure.filter((x) => x.severity === 'amber').length,
       vicino: list.length - sure.length,
+      orari: all.length - list.length, // divieti a orario non in vigore al passaggio
     };
   }
 
@@ -1445,7 +1492,7 @@
   }
 
   function checkPoints() {
-    const list = allHazards();
+    const list = allHazards().filter((x) => x.severity !== 'info');
     const ul = h('ul', { class: 'check-pts' });
     for (const hz of list.slice(0, 3)) {
       const maybe = hz.rel === 'vicino';
@@ -1461,6 +1508,8 @@
     return ul;
   }
 
+  const CALENDARIO_NOTE = 'Il calendario nazionale dei divieti per i mezzi pesanti (festivi ed estate) vale per i veicoli che trasportano merci sopra 7,5 t, non per gli autobus.';
+
   function renderCheck() {
     const box = $('#check-banner');
     const a = state.analysis;
@@ -1473,7 +1522,7 @@
       const tot = a && a.total;
       body.append(
         h('b', { text: tot ? `Controllo dei limiti: tratto ${Math.min(a.done + 1, tot)} di ${tot}` : 'Controllo dei limiti in corso…' }),
-        'Cerco su OpenStreetMap limiti di altezza, larghezza, lunghezza, massa e divieti per bus lungo tutto il percorso.');
+        'Cerco su OpenStreetMap limiti di altezza, larghezza, lunghezza, massa e divieti per bus, anche a giorni e orari, lungo tutto il percorso.');
       if (tot) {
         body.append(h('span', { class: 'progress', role: 'progressbar', 'aria-label': 'Avanzamento del controllo', 'aria-valuemin': 0, 'aria-valuemax': tot, 'aria-valuenow': a.done },
           h('span', { style: `width:${Math.round((a.done / tot) * 100)}%` })));
@@ -1504,6 +1553,7 @@
       } else {
         body.append(h('b', { text: 'Nessun limite incompatibile nei tratti controllati' }));
       }
+      body.append(h('span', { class: 'so-far src', text: (c.orari ? `${plural(c.orari, 'divieto', 'divieti')} a giorni e orari sul percorso non ${c.orari === 1 ? 'è' : 'sono'} in vigore quando passi. ` : '') + CALENDARIO_NOTE }));
       const fonte = dataSourceNote(a);
       if (fonte) body.append(h('span', { class: 'so-far src', text: fonte.text }));
       if (fonte && fonte.old) body.append(h('span', { class: 'so-far', text: fonte.old }));
@@ -1675,6 +1725,32 @@
     wl.replaceChildren(...p.warnings.map((w) => h('li', { class: w.level, text: w.text })));
   }
 
+  function hazardItem(hz) {
+    const km = hz.alongStart / 1000;
+    const span = hz.alongEnd - hz.alongStart;
+    const eta = clockAtAlong(hz.alongStart);
+    const meta = [hz.name, `km ${C.fmtNum(km, km < 10 ? 1 : 0)}`, eta && hz.kind !== 'orario' ? 'verso le ' + C.fmtClock(eta, depMs()) : '', span > 150 ? `tratto di ${C.fmtDist(span)}` : ''].filter(Boolean).join(' · ');
+    const isOsm = !hz.ids[0].startsWith('tomtom/');
+    const osm = hz.ids[0].split('/');
+    const doubts = C.hazardDoubts(hz);
+    const maybe = hz.rel === 'vicino';
+    return h('li', { class: 'hz' + (maybe ? ' maybe' : '') + (hz.severity === 'info' ? ' info' : '') },
+      h('span', { class: maybe ? 'maybe' : null, svg: hazardSign(hz) }),
+      h('div', { class: 'hz-body' },
+        maybe ? h('span', { class: 'maybe-tag', text: `Forse non sul percorso · a ${Math.max(1, Math.round(hz.distM || 0))} m` }) : null,
+        h('span', { class: 'hz-title' }, hz.title, h('span', { class: `sev sev-${hz.severity}-bg`, text: sevLabel(hz) })),
+        hz.kind === 'orario' ? h('span', { class: 'hz-when' }, h('b', { text: 'Quando vale: ' }), hz.when) : null,
+        h('span', { text: hz.detail }),
+        h('span', { class: 'hz-meta', text: meta }),
+        hz.tomtom && hz.kind !== 'tomtom' ? h('span', { class: 'tt-verdict ' + hz.tomtom + (hz.severity === 'red' && hz.tomtom === 'passa' ? ' conflitto' : ''), text: ttText(hz) }) : null,
+        doubts.length ? h('span', { class: 'hz-doubt', text: doubts.join(' ') }) : null,
+        h('span', { class: 'hz-advice' }, h('b', { text: 'Cosa fare: ' }), C.hazardAdvice(hz)),
+        h('span', { class: 'hz-links' },
+          h('button', { type: 'button', onclick: () => focusHazard(hz) }, 'Mostra sulla mappa'),
+          h('a', { href: streetViewUrl(hz), target: '_blank', rel: 'noopener' }, 'Street View'),
+          isOsm ? h('a', { href: `https://www.openstreetmap.org/${osm[0]}/${osm[1]}`, target: '_blank', rel: 'noopener' }, 'Dati OSM') : null)));
+  }
+
   function renderHazards() {
     const ul = $('#hazards');
     const cnt = $('#hz-count');
@@ -1682,40 +1758,26 @@
     cnt.textContent = '';
     const a = state.analysis;
     const loading = !a || a.status === 'loading';
-    const list = allHazards();
-    if ((!a || !a.hazards) && !list.length) { ul.append(h('li', { class: 'none' }, loading ? 'Controllo in corso…' : 'Elenco non disponibile.')); return; }
-    if (!list.length && !excludedHazards().length) {
+    const all = allHazards();
+    const list = all.filter((hz) => hz.severity !== 'info');
+    const quiet = all.filter((hz) => hz.severity === 'info'); // divieti a orario non in vigore al passaggio
+    if ((!a || !a.hazards) && !all.length) { ul.append(h('li', { class: 'none' }, loading ? 'Controllo in corso…' : 'Elenco non disponibile.')); return; }
+    if (!all.length && !excludedHazards().length) {
       ul.append(h('li', { class: 'none' }, loading ? 'Nessun punto critico finora, il controllo continua…'
         : a.status === 'partial' ? 'Nessun punto critico nei tratti controllati.'
           : 'Nessun punto critico per questo mezzo nei dati di OpenStreetMap.'));
       return;
     }
-    cnt.textContent = String(list.length);
-    for (const hz of list) {
-      const km = hz.alongStart / 1000;
-      const span = hz.alongEnd - hz.alongStart;
-      const eta = clockAtAlong(hz.alongStart);
-      const meta = [hz.name, `km ${C.fmtNum(km, km < 10 ? 1 : 0)}`, eta ? 'verso le ' + C.fmtClock(eta, depMs()) : '', span > 150 ? `tratto di ${C.fmtDist(span)}` : ''].filter(Boolean).join(' · ');
-      const isOsm = !hz.ids[0].startsWith('tomtom/');
-      const osm = hz.ids[0].split('/');
-      const doubts = C.hazardDoubts(hz);
-      const maybe = hz.rel === 'vicino';
-      ul.append(h('li', { class: 'hz' + (maybe ? ' maybe' : '') },
-        h('span', { class: maybe ? 'maybe' : null, svg: hazardSign(hz) }),
-        h('div', { class: 'hz-body' },
-          maybe ? h('span', { class: 'maybe-tag', text: `Forse non sul percorso · a ${Math.max(1, Math.round(hz.distM || 0))} m` }) : null,
-          h('span', { class: 'hz-title' }, hz.title, h('span', { class: `sev sev-${hz.severity}-bg`, text: hz.severity === 'red' ? 'Non transitabile' : 'Da verificare' })),
-          h('span', { text: hz.detail }),
-          h('span', { class: 'hz-meta', text: meta }),
-          hz.tomtom && hz.kind !== 'tomtom' ? h('span', { class: 'tt-verdict ' + hz.tomtom + (hz.severity === 'red' && hz.tomtom === 'passa' ? ' conflitto' : ''), text: ttText(hz) }) : null,
-          doubts.length ? h('span', { class: 'hz-doubt', text: doubts.join(' ') }) : null,
-          h('span', { class: 'hz-advice' }, h('b', { text: 'Cosa fare: ' }), C.hazardAdvice(hz)),
-          h('span', { class: 'hz-links' },
-            h('button', { type: 'button', onclick: () => focusHazard(hz) }, 'Mostra sulla mappa'),
-            h('a', { href: streetViewUrl(hz), target: '_blank', rel: 'noopener' }, 'Street View'),
-            isOsm ? h('a', { href: `https://www.openstreetmap.org/${osm[0]}/${osm[1]}`, target: '_blank', rel: 'noopener' }, 'Dati OSM') : null))));
-    }
+    if (list.length) cnt.textContent = String(list.length);
+    else if (!loading) ul.append(h('li', { class: 'none' }, 'Nessun punto critico al tuo passaggio.'));
+    for (const hz of list) ul.append(hazardItem(hz));
     if (loading) ul.append(h('li', { class: 'none' }, 'Controllo degli altri tratti in corso…'));
+    if (quiet.length) {
+      ul.append(h('li', { class: 'hz-quiet' }, h('details', null,
+        h('summary', null, `Divieti a giorni e orari non in vigore quando passi (${quiet.length})`),
+        h('p', { class: 'hz-meta', text: 'Se cambi giorno o orario di partenza, o se accumuli ritardo, possono diventare validi.' }),
+        h('ul', { class: 'hazards' }, quiet.map(hazardItem)))));
+    }
     const ex = excludedHazards();
     if (ex.length) {
       ul.append(h('li', { class: 'hz-excluded' }, h('details', null,
@@ -1800,7 +1862,7 @@
     const wps = r.stops.map((s, i) => ({ lat: s.lat, lon: s.lon, name: `${C.stopLetter(i)} · ${s.label}` }));
     for (const ev of state.plan.events) if (ev.type === 'pausa' && ev.lat != null) wps.push({ lat: ev.lat, lon: ev.lon, name: `Pausa ${ev.minutes}′ · ${ev.place ? ev.place.name : 'area idonea'}` });
     const a = state.analysis;
-    for (const hz of allHazards()) wps.push({ lat: hz.lat, lon: hz.lon, name: `${hz.rel === 'vicino' ? 'Forse (vicino)' : hz.severity === 'red' ? 'ATTENZIONE' : 'Verifica'}: ${hz.title}`, desc: hz.detail });
+    for (const hz of allHazards()) wps.push({ lat: hz.lat, lon: hz.lon, name: `${hz.severity === 'info' ? 'Divieto a orario' : hz.rel === 'vicino' ? 'Forse (vicino)' : hz.severity === 'red' ? 'ATTENZIONE' : 'Verifica'}: ${hz.title}`, desc: hz.when ? `Vale: ${hz.when}. ${hz.detail}` : hz.detail });
     const gpx = C.buildGpx({ name: tripTitle(), desc: vehicleLine(r.vehicle, r.margin), coords: r.coords, waypoints: wps });
     const blob = new Blob([gpx], { type: 'application/gpx+xml' });
     const url = URL.createObjectURL(blob);
@@ -1848,7 +1910,7 @@
       h('p', { text: vehicleLine(r.vehicle, r.margin) }),
       h('p', { text: `Partenza ${new Date(depMs()).toLocaleString('it-IT', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })} · ${C.fmtDist(r.distanceM)} · ${C.fmtDur(state.plan.driveS)} di guida` }));
     $('#steps-wrap').open = true;
-    document.querySelectorAll('.pm-how').forEach((d) => { d.open = true; });
+    document.querySelectorAll('.pm-how, .hz-quiet details').forEach((d) => { d.open = true; });
     showTab('percorso');
     setTimeout(() => window.print(), 50);
   });
