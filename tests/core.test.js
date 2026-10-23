@@ -591,6 +591,8 @@ test('parcheggi: superficie e tipo', () => {
   assert.equal(C.parkingKind({ amenity: 'parking', hgv: 'yes' }), 'pesanti');
   assert.equal(C.parkingKind({ amenity: 'parking' }, 3000), 'generico');
   assert.equal(C.parkingKind({ amenity: 'parking', capacity: '80' }, 0), 'generico');
+  assert.equal(C.parkingKind({ amenity: 'parking' }, 1600), 'generico');
+  assert.equal(C.parkingKind({ amenity: 'parking', capacity: '30' }, 900), null);
   assert.equal(C.parkingKind({ amenity: 'parking' }, 800), null, 'troppo piccolo');
   assert.equal(C.parkingKind({ amenity: 'parking', parking: 'underground' }, 9000), null);
   assert.equal(C.parkingKind({ amenity: 'parking', parking: 'multi-storey' }, 9000), null);

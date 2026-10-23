@@ -1645,8 +1645,8 @@
   /* ------------------------------------------------------------------ */
   const PARK_NEAR = 1000;       // parcheggi da mostrare intorno all'arrivo
   const PARK_FAR = 5000;        // se entro 1 km non c'è un parcheggio per bus, il più vicino fino a qui
-  const PARK_GEN_AREA = 2500;   // parcheggio generico "grande": almeno 2.500 m² ...
-  const PARK_GEN_CAP = 60;      // ... oppure almeno 60 posti
+  const PARK_GEN_AREA = 1500;   // parcheggio generico abbastanza grande per entrare e girare con 13 m: almeno 1.500 m² ...
+  const PARK_GEN_CAP = 40;      // ... oppure almeno 40 posti auto
   const PARK_CLOSED = /^(underground|multi-storey|rooftop|garage_boxes|carports|sheds|lane|street_side|on_kerb|half_on_kerb)$/;
   const YD = /^(yes|designated)$/;
 

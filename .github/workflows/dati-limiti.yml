@@ -12,6 +12,7 @@ on:
     branches: [main]
     paths:
       - tools/build-data.js
+      - js/core.js # le regole su limiti e parcheggi stanno qui
       - .github/workflows/dati-limiti.yml
 
 permissions:
