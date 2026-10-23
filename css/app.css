@@ -391,6 +391,12 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 .pk-icon { width: 36px; height: 36px; border-radius: 6px; background: var(--accent); color: #fff; display: grid; place-items: center; font: 700 20px/1 var(--font-display); }
 .pk-icon small { font-size: 8.5px; letter-spacing: .06em; margin-top: -10px; }
 .pk-group { font: 600 12px/1.2 var(--font-body); color: var(--muted); letter-spacing: .06em; text-transform: uppercase; margin-top: 4px; }
+.pk-sub { font-weight: 700; font-size: 14px; margin-top: 8px; }
+.pk.gen { border-style: dashed; }
+.pk.gen .pk-icon { background: var(--surface); color: var(--accent); border: 2px dashed var(--accent); }
+.pk .hz-title .sev { margin-left: 2px; }
+.pk-report { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; padding: 10px; border-radius: var(--r); background: var(--surface-2); font-size: 14px; }
+.pk-report a { font-weight: 600; color: var(--accent); }
 
 .permits { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .pm { border: 1px solid var(--line); border-radius: var(--r); padding: 12px; display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
@@ -456,6 +462,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 }
 .pk-marker { background: #1d4f9c; font-size: 17px; line-height: .9; text-align: center; }
 .pk-marker small { display: block; font-size: 7.5px; letter-spacing: .05em; }
+.pk-marker.gen { background: #fff; color: #1d4f9c; border: 2px dashed #1d4f9c; }
 .me-dot { width: 18px; height: 18px; border-radius: 50%; background: #2a7de1; border: 3px solid #fff; box-shadow: 0 0 0 6px rgba(42,125,225,.25); }
 
 .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--surface); color: var(--fg); box-shadow: var(--shadow); }

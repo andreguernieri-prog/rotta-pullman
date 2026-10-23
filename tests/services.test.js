@@ -88,3 +88,13 @@ test('overpass: la ricerca lungo il percorso chiede anche i divieti a orario', (
   assert.match(q, /:conditional\$"~"\."/);
   assert.match(q, /motor_vehicle\|vehicle\|access\|hgv/);
 });
+
+test('overpass: parcheggi per bus fino a 5 km, generici entro 1 km con il perimetro', async () => {
+  let q = '';
+  installFetch(async (u, opts) => { q = new URLSearchParams(String(opts.body)).get('data'); return res(200, OK); });
+  await S.parkings(pts, { near: 1000, far: 5000 });
+  assert.match(q, /nw\(around:5000,[^)]*\)\[amenity=parking\]\[~"\^\(bus\|coach\|tourist_bus\)\$"/);
+  assert.match(q, /way\(around:1000,[^)]*\)\[amenity=parking\]\[access!~/);
+  assert.match(q, /out body geom;/);
+  assert.match(q, /multi-storey/);
+});

@@ -574,3 +574,50 @@ test('categorie certe: divieto fisso con le eccezioni nel dettaglio', () => {
   assert.match(r.fixed[0].detail, /consentito per disabili, soccorso, carico e scarico/);
   assert.equal(C.conditionalIssues({ motor_vehicle: 'no', 'motor_vehicle:conditional': 'yes @ (bus)' }, veh).fixed.length, 0);
 });
+
+/* ------------------------------- parcheggi ------------------------------- */
+// rettangolo di lato a × b metri intorno a un punto, come geometria OSM chiusa
+function lotto(lat, lon, a, b) {
+  const dLat = b / 2 / 110540, dLon = a / 2 / (111320 * Math.cos(lat * Math.PI / 180));
+  const pts = [[lat - dLat, lon - dLon], [lat - dLat, lon + dLon], [lat + dLat, lon + dLon], [lat + dLat, lon - dLon], [lat - dLat, lon - dLon]];
+  return pts.map(([la, lo]) => ({ lat: la, lon: lo }));
+}
+
+test('parcheggi: superficie e tipo', () => {
+  const g = lotto(46.17, 10.07, 50, 60).map((p) => [p.lat, p.lon]);
+  near(C.ringArea(g), 3000, 30);
+  assert.equal(C.parkingKind({ amenity: 'parking', bus: 'designated' }), 'bus');
+  assert.equal(C.parkingKind({ amenity: 'parking', parking: 'bus_bay' }), 'bus');
+  assert.equal(C.parkingKind({ amenity: 'parking', hgv: 'yes' }), 'pesanti');
+  assert.equal(C.parkingKind({ amenity: 'parking' }, 3000), 'generico');
+  assert.equal(C.parkingKind({ amenity: 'parking', capacity: '80' }, 0), 'generico');
+  assert.equal(C.parkingKind({ amenity: 'parking' }, 800), null, 'troppo piccolo');
+  assert.equal(C.parkingKind({ amenity: 'parking', parking: 'underground' }, 9000), null);
+  assert.equal(C.parkingKind({ amenity: 'parking', parking: 'multi-storey' }, 9000), null);
+  assert.equal(C.parkingKind({ amenity: 'parking', access: 'private' }, 9000), null);
+  assert.equal(C.parkingKind({ amenity: 'parking', maxheight: '2.1' }, 9000), null);
+  assert.equal(C.parkingKind({ amenity: 'parking', bus: 'no' }, 9000), null);
+});
+
+test('parcheggi: per bus entro 1 km, il più vicino oltre se non c\'è, generici grandi', () => {
+  const dest = { lat: 46.17, lon: 10.07 };
+  const off = (m) => dest.lat + m / 110540;
+  const els = [
+    { type: 'way', id: 1, geometry: lotto(off(300), dest.lon, 60, 60), tags: { amenity: 'parking', name: 'Piazzale grande' } },
+    { type: 'way', id: 2, geometry: lotto(off(200), dest.lon, 20, 20), tags: { amenity: 'parking', name: 'Piccolo' } },
+    { type: 'node', id: 3, lat: off(2500), lon: dest.lon, tags: { amenity: 'parking', bus: 'yes', name: 'Bus a 2,5 km' } },
+    { type: 'node', id: 4, lat: off(4000), lon: dest.lon, tags: { amenity: 'parking', hgv: 'yes' } },
+    { type: 'node', id: 5, lat: off(7000), lon: dest.lon, tags: { amenity: 'parking', bus: 'yes', name: 'Troppo lontano' } },
+    { type: 'node', id: 6, lat: off(600), lon: dest.lon, center: null, tags: { amenity: 'parking', capacity: '120', _a: '4000' } },
+  ];
+  const r = C.pickParkings(els, dest);
+  assert.equal(r.near.length, 0);
+  assert.deepEqual(r.far.map((x) => x.tags.name || x.kind), ['Bus a 2,5 km', 'pesanti']);
+  assert.deepEqual(r.generic.map((x) => x.id), ['way/1', 'node/6']);
+  near(r.generic[0].area, 3600, 100);
+  assert.equal(r.generic[1].area, 4000);
+  // con un parcheggio per bus entro 1 km, quelli più lontani non servono
+  const r2 = C.pickParkings(els.concat([{ type: 'node', id: 7, lat: off(800), lon: dest.lon, tags: { amenity: 'parking', coach: 'designated' } }]), dest);
+  assert.deepEqual(r2.near.map((x) => x.id), ['node/7']);
+  assert.equal(r2.far.length, 0);
+});

@@ -1069,6 +1069,12 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 .pk-icon { width: 36px; height: 36px; border-radius: 6px; background: var(--accent); color: #fff; display: grid; place-items: center; font: 700 20px/1 var(--font-display); }
 .pk-icon small { font-size: 8.5px; letter-spacing: .06em; margin-top: -10px; }
 .pk-group { font: 600 12px/1.2 var(--font-body); color: var(--muted); letter-spacing: .06em; text-transform: uppercase; margin-top: 4px; }
+.pk-sub { font-weight: 700; font-size: 14px; margin-top: 8px; }
+.pk.gen { border-style: dashed; }
+.pk.gen .pk-icon { background: var(--surface); color: var(--accent); border: 2px dashed var(--accent); }
+.pk .hz-title .sev { margin-left: 2px; }
+.pk-report { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; padding: 10px; border-radius: var(--r); background: var(--surface-2); font-size: 14px; }
+.pk-report a { font-weight: 600; color: var(--accent); }
 
 .permits { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .pm { border: 1px solid var(--line); border-radius: var(--r); padding: 12px; display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
@@ -1134,6 +1140,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 }
 .pk-marker { background: #1d4f9c; font-size: 17px; line-height: .9; text-align: center; }
 .pk-marker small { display: block; font-size: 7.5px; letter-spacing: .05em; }
+.pk-marker.gen { background: #fff; color: #1d4f9c; border: 2px dashed #1d4f9c; }
 .me-dot { width: 18px; height: 18px; border-radius: 50%; background: #2a7de1; border: 3px solid #fff; box-shadow: 0 0 0 6px rgba(42,125,225,.25); }
 
 .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--surface); color: var(--fg); box-shadow: var(--shadow); }
@@ -3053,6 +3060,88 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
   }
 
   /* ------------------------------------------------------------------ */
+  /* Parcheggi vicino all'arrivo                                         */
+  /* ------------------------------------------------------------------ */
+  const PARK_NEAR = 1000;       // parcheggi da mostrare intorno all'arrivo
+  const PARK_FAR = 5000;        // se entro 1 km non c'è un parcheggio per bus, il più vicino fino a qui
+  const PARK_GEN_AREA = 2500;   // parcheggio generico "grande": almeno 2.500 m² ...
+  const PARK_GEN_CAP = 60;      // ... oppure almeno 60 posti
+  const PARK_CLOSED = /^(underground|multi-storey|rooftop|garage_boxes|carports|sheds|lane|street_side|on_kerb|half_on_kerb)$/;
+  const YD = /^(yes|designated)$/;
+
+  /* area in m² di un anello [[lat, lon], ...] */
+  function ringArea(pts) {
+    if (!pts || pts.length < 3) return 0;
+    const { kx, ky } = metersPerDeg(pts[0][0]);
+    const o = pts[0];
+    let s = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      s += ((a[1] - o[1]) * kx) * ((b[0] - o[0]) * ky) - ((b[1] - o[1]) * kx) * ((a[0] - o[0]) * ky);
+    }
+    return Math.abs(s) / 2;
+  }
+
+  /*
+   * Che parcheggio è per un pullman:
+   *   'bus'      segnato per bus o pullman turistici
+   *   'pesanti'  segnato per mezzi pesanti
+   *   'generico' grande e all'aperto, non segnato per bus: possibile, da verificare
+   *   null       non adatto o troppo piccolo
+   */
+  function parkingKind(tags, areaM2) {
+    const t = tags || {};
+    if (t.amenity !== 'parking') return null;
+    if (['bus', 'coach', 'tourist_bus'].some((k) => YD.test(t[k] || '')) || /^(bus|coach)/.test(t.parking || '')) return 'bus';
+    if (YD.test(t.hgv || '')) return 'pesanti';
+    if (/^(private|no)$/.test(t.access || '') || PARK_CLOSED.test(t.parking || '')) return null;
+    if (['bus', 'coach', 'tourist_bus', 'motor_vehicle'].some((k) => t[k] === 'no')) return null;
+    const h = parseLength(t.maxheight);
+    if (h === 'below_default' || (typeof h === 'number' && h < 4)) return null;
+    const cap = parseInt(t.capacity, 10);
+    if ((isFinite(cap) && cap >= PARK_GEN_CAP) || (areaM2 || 0) >= PARK_GEN_AREA) return 'generico';
+    return null;
+  }
+
+  /*
+   * Sceglie i parcheggi da mostrare intorno all'arrivo:
+   *   near    per bus o mezzi pesanti entro 1 km
+   *   far     se entro 1 km non ce n'è uno per bus, i più vicini fino a 5 km
+   *   generic grandi parcheggi generici entro 1 km
+   */
+  function pickParkings(elements, dest) {
+    const seen = new Set();
+    const all = [];
+    for (const el of elements || []) {
+      const id = el.type + '/' + el.id;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const t = el.tags || {};
+      let c = el.center || (el.lat != null ? { lat: el.lat, lon: el.lon } : null);
+      let area = Number(t._a) || 0;
+      if (el.geometry && el.geometry.length > 2) {
+        const pts = el.geometry.map((g) => [g.lat, g.lon]);
+        if (!area) area = ringArea(pts);
+        if (!c) {
+          const ring = pts.length > 3 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1] ? pts.slice(0, -1) : pts;
+          c = { lat: ring.reduce((s, p) => s + p[0], 0) / ring.length, lon: ring.reduce((s, p) => s + p[1], 0) / ring.length };
+        }
+      }
+      if (!c) continue;
+      const kind = parkingKind(t, area);
+      if (!kind) continue;
+      const d = haversine([dest.lat, dest.lon], [c.lat, c.lon]);
+      if (d > PARK_FAR) continue;
+      all.push({ id, lat: c.lat, lon: c.lon, d, tags: t, kind, bus: kind === 'bus', area: area >= 100 ? Math.round(area / 100) * 100 : null });
+    }
+    const marked = all.filter((x) => x.kind !== 'generico');
+    const near = marked.filter((x) => x.d <= PARK_NEAR).sort((a, b) => (a.kind === b.kind ? a.d - b.d : a.kind === 'bus' ? -1 : 1)).slice(0, 6);
+    const far = near.some((x) => x.kind === 'bus') ? [] : marked.filter((x) => x.d > PARK_NEAR).sort((a, b) => a.d - b.d).slice(0, 3);
+    const generic = all.filter((x) => x.kind === 'generico' && x.d <= PARK_NEAR).sort((a, b) => a.d - b.d).slice(0, 4);
+    return { near, far, generic };
+  }
+
+  /* ------------------------------------------------------------------ */
   /* Permessi per i bus nei comuni                                       */
   /* ------------------------------------------------------------------ */
   function normName(s) {
@@ -3103,6 +3192,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
     planTrip, fmtDur, fmtDist, fmtClock, fmtNum, stopLetter, parseCoords,
     buildGpx, encodeShare, decodeShare, normName, matchPermit, groupPermits,
     tileKey, tilesAround, tilesForCoords, pointInRings, coordsCovered, tileToElements,
+    PARK_NEAR, PARK_FAR, ringArea, parkingKind, pickParkings,
   };
 });
 
@@ -3451,19 +3541,35 @@ ${svc}
     return data.elements;
   }
 
-  /* parcheggi adatti ai bus vicino alle tappe */
+  /*
+   * Parcheggi intorno all'arrivo: quelli per bus o mezzi pesanti fino a "far" metri,
+   * quelli generici all'aperto entro "near" metri (con il perimetro, per stimarne la superficie).
+   * radius: numero (stesso raggio per tutti) oppure { near, far }.
+   */
   async function parkings(points, radius, signal) {
-    const parts = points.map((p) => {
-      const a = `around:${radius},${p.lat.toFixed(6)},${p.lon.toFixed(6)}`;
+    const near = typeof radius === 'number' ? radius : radius.near;
+    const far = typeof radius === 'number' ? radius : radius.far;
+    const at = (p, r) => `around:${r},${p.lat.toFixed(6)},${p.lon.toFixed(6)}`;
+    const bus = points.map((p) => {
+      const a = at(p, far);
       return `  nw(${a})[amenity=parking][~"^(bus|coach|tourist_bus)$"~"^(yes|designated)$"];
   nw(${a})[amenity=parking][parking~"^(bus|coach)"];
   nw(${a})[amenity=parking][hgv~"^(yes|designated)$"];`;
     }).join('\n');
+    const gen = points.map((p) => {
+      const a = at(p, near);
+      return `  way(${a})[amenity=parking][access!~"^(private|no)$"][parking!~"^(underground|multi-storey|rooftop|garage_boxes|carports|sheds|lane|street_side|on_kerb|half_on_kerb)$"];
+  node(${a})[amenity=parking][capacity][access!~"^(private|no)$"];`;
+    }).join('\n');
     const q = `[out:json][timeout:25];
 (
-${parts}
+${bus}
 );
-out body center;`;
+out body center;
+(
+${gen}
+);
+out body geom;`;
     const data = await overpass(q, signal, 35000);
     return data.elements;
   }
@@ -4916,8 +5022,7 @@ out body center;`;
     runAnalysis(seq, workCtrl ? workCtrl.signal : undefined, only);
   }
 
-  /* Parcheggi per bus solo intorno al punto di arrivo, entro PARK_RADIUS metri */
-  const PARK_RADIUS = 1000;
+  /* Parcheggi intorno al punto di arrivo: per bus entro 1 km (o il più vicino fino a 5 km), generici grandi entro 1 km */
   const parkCache = new Map();
 
   async function runParkings(my, signal) {
@@ -4933,7 +5038,7 @@ out body center;`;
         if (my !== seq) return;
         if (dati && C.pointInRings(dest.lat, dest.lon, dati.copertura)) {
           try {
-            const tiles = await API.dataTiles(dati, C.tilesAround(dest.lat, dest.lon, PARK_RADIUS, dati.riquadro), signal);
+            const tiles = await API.dataTiles(dati, C.tilesAround(dest.lat, dest.lon, C.PARK_FAR, dati.riquadro), signal);
             els = tiles.flatMap(C.tileToElements).filter((e) => e.tags && e.tags.amenity === 'parking');
             parkCache.set(cacheKey, els);
           } catch (e) {
@@ -4944,7 +5049,7 @@ out body center;`;
       }
       for (let attempt = 0; !els; attempt++) {
         try {
-          els = await API.parkings(pts, PARK_RADIUS, signal);
+          els = await API.parkings(pts, { near: C.PARK_NEAR, far: C.PARK_FAR }, signal);
           parkCache.set(cacheKey, els);
           break;
         } catch (e) {
@@ -4960,25 +5065,8 @@ out body center;`;
         }
       }
       if (my !== seq) return;
-      const seen = new Set();
-      const groups = pts.map((p) => ({ stop: p.i, items: [] }));
-      for (const el of els) {
-        const key = el.type + '/' + el.id;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const c = el.center || (el.lat != null ? { lat: el.lat, lon: el.lon } : null);
-        if (!c) continue;
-        let best = null;
-        pts.forEach((p, k) => {
-          const d = C.haversine([p.lat, p.lon], [c.lat, c.lon]);
-          if (!best || d < best.d) best = { k, d };
-        });
-        if (!best || best.d > PARK_RADIUS) continue;
-        const t = el.tags || {};
-        const busTag = /^(yes|designated)$/.test(t.bus || '') || /^(yes|designated)$/.test(t.coach || '') || /^(yes|designated)$/.test(t.tourist_bus || '') || /^(bus|coach)/.test(t.parking || '');
-        groups[best.k].items.push({ id: key, lat: c.lat, lon: c.lon, d: best.d, tags: t, bus: busTag });
-      }
-      for (const g of groups) g.items.sort((a, b) => (a.bus === b.bus ? a.d - b.d : a.bus ? -1 : 1)).splice(6);
+      const pk = C.pickParkings(els, dest);
+      const groups = [{ stop: last, items: pk.near, far: pk.far, generic: pk.generic }];
       state.parkings = { status: 'done', groups };
     } catch (e) {
       if (my !== seq || e.code === 'aborted') return;
@@ -5227,29 +5315,35 @@ out body center;`;
 
   function parkingName(it) {
     const t = it.tags;
-    return t.name || (it.bus ? 'Parcheggio bus' : 'Parcheggio mezzi pesanti');
+    return t.name || (it.kind === 'bus' ? 'Parcheggio bus' : it.kind === 'pesanti' ? 'Parcheggio mezzi pesanti' : 'Parcheggio');
   }
   function parkingMeta(it) {
     const t = it.tags, out = [];
-    out.push(`a ${C.fmtDist(it.d)}`);
+    out.push(`a ${C.fmtDist(it.d)}${it.d > C.PARK_NEAR ? ' dall\'arrivo' : ''}`);
+    if (it.kind === 'generico') {
+      if (it.area) out.push(`circa ${it.area.toLocaleString('it-IT')} m²`);
+      if (t.capacity) out.push(`${t.capacity} posti auto`);
+    }
     if (t.fee === 'yes') out.push('a pagamento');
     else if (t.fee === 'no') out.push('gratuito');
     if (t['capacity:bus'] || t['capacity:coach']) out.push(`${t['capacity:bus'] || t['capacity:coach']} posti bus`);
     if (t.access === 'private' || t.access === 'customers') out.push(t.access === 'private' ? 'privato' : 'solo clienti');
     if (t.opening_hours) out.push(t.opening_hours);
-    if (!it.bus) out.push('verifica che accetti bus');
+    if (it.kind === 'pesanti') out.push('verifica che accetti bus');
     return out.join(' · ');
   }
+  const PARK_MARK = { bus: 'P<small>BUS</small>', pesanti: 'P<small>BUS</small>', generico: 'P<small>?</small>' };
 
   function drawParkings() {
     lg.parks.clearLayers();
     const p = state.parkings;
     if (!p || p.status !== 'done') return;
     for (const g of p.groups) {
-      for (const it of g.items) {
-        const icon = L.divIcon({ className: '', html: '<div class="pk-marker">P<small>BUS</small></div>', iconSize: [30, 30], iconAnchor: [15, 15], popupAnchor: [0, -14] });
-        L.marker([it.lat, it.lon], { icon, zIndexOffset: 200, title: parkingName(it) })
-          .bindPopup(() => popupBox(parkingName(it), parkingMeta(it)))
+      for (const it of g.items.concat(g.far || [], g.generic || [])) {
+        const gen = it.kind === 'generico';
+        const icon = L.divIcon({ className: '', html: `<div class="pk-marker${gen ? ' gen' : ''}">${PARK_MARK[it.kind]}</div>`, iconSize: [30, 30], iconAnchor: [15, 15], popupAnchor: [0, -14] });
+        L.marker([it.lat, it.lon], { icon, zIndexOffset: gen ? 150 : 200, title: parkingName(it) + (gen ? ' (non segnato per bus)' : '') })
+          .bindPopup(() => popupBox(parkingName(it), parkingMeta(it), gen ? h('span', { text: 'Non segnato per bus: verifica che ci sia spazio per un pullman.' }) : null))
           .addTo(lg.parks);
       }
     }
@@ -5745,25 +5839,52 @@ out body center;`;
       if (p.detail) ul.append(h('li', { class: 'err-detail', text: 'Dettagli: ' + p.detail }));
       return;
     }
-    let any = false;
     for (const g of p.groups) {
       const s = r.stops[g.stop];
+      const far = g.far || [], generic = g.generic || [];
       ul.append(h('li', { class: 'pk-group', text: `Arrivo · ${s.label || 'destinazione'}` }));
-      if (!g.items.length) { ul.append(h('li', { class: 'none' }, 'Nessun parcheggio per bus segnato su OpenStreetMap entro 1 km dall\'arrivo.')); continue; }
-      any = true;
-      for (const it of g.items) {
-        ul.append(h('li', { class: 'pk' },
-          h('span', { class: 'pk-icon', 'aria-hidden': 'true' }, 'P'),
-          h('div', { class: 'hz-body' },
-            h('span', { class: 'hz-title', text: parkingName(it) }),
-            h('span', { class: 'hz-meta', text: parkingMeta(it) }),
-            h('span', { class: 'hz-links' },
-              h('button', { type: 'button', onclick: () => flyTo(it.lat, it.lon, 17) }, 'Mostra sulla mappa'),
-              h('a', { href: `https://www.google.com/maps/dir/?api=1&destination=${it.lat.toFixed(6)},${it.lon.toFixed(6)}`, target: '_blank', rel: 'noopener' }, 'Naviga'),
-              h('a', { href: `https://www.openstreetmap.org/${it.id}`, target: '_blank', rel: 'noopener' }, 'Dati OSM')))));
+      if (g.items.length) for (const it of g.items) ul.append(parkingItem(it));
+      else ul.append(h('li', { class: 'none' }, 'Nessun parcheggio per bus segnato su OpenStreetMap entro 1 km dall\'arrivo.'));
+      if (far.length) {
+        ul.append(h('li', { class: 'pk-sub', text: far.length === 1 ? 'Il più vicino, oltre 1 km' : 'I più vicini, oltre 1 km' }));
+        for (const it of far) ul.append(parkingItem(it));
       }
+      if (generic.length) {
+        ul.append(h('li', { class: 'pk-sub', text: 'Parcheggi grandi entro 1 km, non segnati per bus' }),
+          h('li', { class: 'hint', text: 'Possono andare bene per un pullman, ma nessuno lo ha indicato: controlla con la vista satellite o Street View lo spazio di manovra, l\'ingresso e i cartelli.' }));
+        for (const it of generic) ul.append(parkingItem(it));
+      }
+      const hasBus = g.items.concat(far).some((it) => it.kind === 'bus');
+      if (!g.items.length) ul.append(h('li', { class: 'hint', text: 'Suggerimento: chiedi alla struttura di arrivo o cerca “parcheggio bus turistici” sul sito del comune.' }));
+      ul.append(h('li', { class: 'pk-report' },
+        h('span', { text: hasBus ? 'Conosci un altro parcheggio adatto ai bus qui vicino?' : 'Conosci un parcheggio adatto ai bus qui vicino?' }),
+        h('a', { href: `https://www.openstreetmap.org/note/new#map=17/${s.lat.toFixed(6)}/${s.lon.toFixed(6)}`, target: '_blank', rel: 'noopener' }, 'Segnala un parcheggio bus'),
+        h('span', { class: 'hz-meta', text: 'Si apre una nota su OpenStreetMap: scrivi dov\'è, quanti pullman ci stanno e se è a pagamento. Un volontario la aggiunge alla mappa, per tutti.' })));
     }
-    if (!any && p.groups.length) ul.append(h('li', { class: 'hint' }, 'Suggerimento: cerca “parcheggio bus turistici” sul sito del comune di destinazione.'));
+  }
+
+  function parkingItem(it) {
+    const gen = it.kind === 'generico';
+    const at = `${it.lat.toFixed(6)},${it.lon.toFixed(6)}`;
+    return h('li', { class: 'pk' + (gen ? ' gen' : '') },
+      h('span', { class: 'pk-icon', 'aria-hidden': 'true' }, 'P'),
+      h('div', { class: 'hz-body' },
+        h('span', { class: 'hz-title' }, parkingName(it), gen ? h('span', { class: 'sev sev-amber-bg', text: 'Da verificare' }) : null),
+        h('span', { class: 'hz-meta', text: parkingMeta(it) }),
+        h('span', { class: 'hz-links' },
+          h('button', { type: 'button', onclick: () => flyTo(it.lat, it.lon, 17) }, 'Mostra sulla mappa'),
+          gen ? h('button', { type: 'button', onclick: () => showSatellite(it.lat, it.lon) }, 'Vista satellite') : null,
+          gen ? h('a', { href: `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${at}`, target: '_blank', rel: 'noopener' }, 'Street View') : null,
+          h('a', { href: `https://www.google.com/maps/dir/?api=1&destination=${at}`, target: '_blank', rel: 'noopener' }, 'Naviga'),
+          h('a', { href: `https://www.openstreetmap.org/${it.id}`, target: '_blank', rel: 'noopener' }, 'Dati OSM'))));
+  }
+
+  /* passa alla vista satellite e inquadra il punto */
+  function showSatellite(lat, lon) {
+    setBase('satellite');
+    const radio = document.getElementById('base-satellite');
+    if (radio) radio.checked = true;
+    flyTo(lat, lon, 18);
   }
 
   function renderSteps() {

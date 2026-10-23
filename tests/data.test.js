@@ -153,3 +153,23 @@ test('dati: i divieti a orario restano, non sui sentieri', () => {
   assert.equal(el.tags['motor_vehicle:conditional'], long, 'condizioni lunghe non troncate');
   assert.equal(el.tags.motor_vehicle, 'yes');
 });
+
+test('dati: parcheggi grandi generici con la superficie, piccoli e coperti scartati', () => {
+  const sq = (lat, lon, m) => { const d = m / 2 / 110540, e = m / 2 / (111320 * Math.cos(lat * Math.PI / 180)); return [[lat - d, lon - e], [lat - d, lon + e], [lat + d, lon + e], [lat + d, lon - e], [lat - d, lon - e]]; };
+  const { index, tiles } = build([
+    poly(41, sq(45.48, 9.2, 60), { amenity: 'parking', name: 'Piazzale', fee: 'no' }),
+    poly(42, sq(45.481, 9.2, 20), { amenity: 'parking' }),
+    poly(43, sq(45.482, 9.2, 80), { amenity: 'parking', parking: 'multi-storey' }),
+    line('way', 44, sq(45.483, 9.2, 70), { amenity: 'parking' }), // via chiusa esportata come linea
+    point(45, 45.484, 9.2, { amenity: 'parking', capacity: '150' }),
+  ]);
+  assert.equal(index.conteggi.generici, 3);
+  const els = C.tileToElements(tiles.get(C.tileKey(45.48, 9.2, D.RIQUADRO))).filter((e) => e.tags.amenity === 'parking');
+  const byId = Object.fromEntries(els.map((e) => [e.id, e]));
+  assert.ok(Math.abs(Number(byId[41].tags._a) - 3600) <= 100);
+  assert.equal(byId[41].tags.fee, 'no');
+  assert.ok(Math.abs(Number(byId[44].tags._a) - 4900) <= 100);
+  assert.equal(byId[45].tags.capacity, '150');
+  assert.ok(!byId[42] && !byId[43]);
+  assert.equal(D.areaOf({ type: 'Point', coordinates: [9, 45] }), 0);
+});

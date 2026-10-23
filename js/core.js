@@ -1641,6 +1641,88 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* Parcheggi vicino all'arrivo                                         */
+  /* ------------------------------------------------------------------ */
+  const PARK_NEAR = 1000;       // parcheggi da mostrare intorno all'arrivo
+  const PARK_FAR = 5000;        // se entro 1 km non c'è un parcheggio per bus, il più vicino fino a qui
+  const PARK_GEN_AREA = 2500;   // parcheggio generico "grande": almeno 2.500 m² ...
+  const PARK_GEN_CAP = 60;      // ... oppure almeno 60 posti
+  const PARK_CLOSED = /^(underground|multi-storey|rooftop|garage_boxes|carports|sheds|lane|street_side|on_kerb|half_on_kerb)$/;
+  const YD = /^(yes|designated)$/;
+
+  /* area in m² di un anello [[lat, lon], ...] */
+  function ringArea(pts) {
+    if (!pts || pts.length < 3) return 0;
+    const { kx, ky } = metersPerDeg(pts[0][0]);
+    const o = pts[0];
+    let s = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      s += ((a[1] - o[1]) * kx) * ((b[0] - o[0]) * ky) - ((b[1] - o[1]) * kx) * ((a[0] - o[0]) * ky);
+    }
+    return Math.abs(s) / 2;
+  }
+
+  /*
+   * Che parcheggio è per un pullman:
+   *   'bus'      segnato per bus o pullman turistici
+   *   'pesanti'  segnato per mezzi pesanti
+   *   'generico' grande e all'aperto, non segnato per bus: possibile, da verificare
+   *   null       non adatto o troppo piccolo
+   */
+  function parkingKind(tags, areaM2) {
+    const t = tags || {};
+    if (t.amenity !== 'parking') return null;
+    if (['bus', 'coach', 'tourist_bus'].some((k) => YD.test(t[k] || '')) || /^(bus|coach)/.test(t.parking || '')) return 'bus';
+    if (YD.test(t.hgv || '')) return 'pesanti';
+    if (/^(private|no)$/.test(t.access || '') || PARK_CLOSED.test(t.parking || '')) return null;
+    if (['bus', 'coach', 'tourist_bus', 'motor_vehicle'].some((k) => t[k] === 'no')) return null;
+    const h = parseLength(t.maxheight);
+    if (h === 'below_default' || (typeof h === 'number' && h < 4)) return null;
+    const cap = parseInt(t.capacity, 10);
+    if ((isFinite(cap) && cap >= PARK_GEN_CAP) || (areaM2 || 0) >= PARK_GEN_AREA) return 'generico';
+    return null;
+  }
+
+  /*
+   * Sceglie i parcheggi da mostrare intorno all'arrivo:
+   *   near    per bus o mezzi pesanti entro 1 km
+   *   far     se entro 1 km non ce n'è uno per bus, i più vicini fino a 5 km
+   *   generic grandi parcheggi generici entro 1 km
+   */
+  function pickParkings(elements, dest) {
+    const seen = new Set();
+    const all = [];
+    for (const el of elements || []) {
+      const id = el.type + '/' + el.id;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const t = el.tags || {};
+      let c = el.center || (el.lat != null ? { lat: el.lat, lon: el.lon } : null);
+      let area = Number(t._a) || 0;
+      if (el.geometry && el.geometry.length > 2) {
+        const pts = el.geometry.map((g) => [g.lat, g.lon]);
+        if (!area) area = ringArea(pts);
+        if (!c) {
+          const ring = pts.length > 3 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1] ? pts.slice(0, -1) : pts;
+          c = { lat: ring.reduce((s, p) => s + p[0], 0) / ring.length, lon: ring.reduce((s, p) => s + p[1], 0) / ring.length };
+        }
+      }
+      if (!c) continue;
+      const kind = parkingKind(t, area);
+      if (!kind) continue;
+      const d = haversine([dest.lat, dest.lon], [c.lat, c.lon]);
+      if (d > PARK_FAR) continue;
+      all.push({ id, lat: c.lat, lon: c.lon, d, tags: t, kind, bus: kind === 'bus', area: area >= 100 ? Math.round(area / 100) * 100 : null });
+    }
+    const marked = all.filter((x) => x.kind !== 'generico');
+    const near = marked.filter((x) => x.d <= PARK_NEAR).sort((a, b) => (a.kind === b.kind ? a.d - b.d : a.kind === 'bus' ? -1 : 1)).slice(0, 6);
+    const far = near.some((x) => x.kind === 'bus') ? [] : marked.filter((x) => x.d > PARK_NEAR).sort((a, b) => a.d - b.d).slice(0, 3);
+    const generic = all.filter((x) => x.kind === 'generico' && x.d <= PARK_NEAR).sort((a, b) => a.d - b.d).slice(0, 4);
+    return { near, far, generic };
+  }
+
+  /* ------------------------------------------------------------------ */
   /* Permessi per i bus nei comuni                                       */
   /* ------------------------------------------------------------------ */
   function normName(s) {
@@ -1691,5 +1773,6 @@
     planTrip, fmtDur, fmtDist, fmtClock, fmtNum, stopLetter, parseCoords,
     buildGpx, encodeShare, decodeShare, normName, matchPermit, groupPermits,
     tileKey, tilesAround, tilesForCoords, pointInRings, coordsCovered, tileToElements,
+    PARK_NEAR, PARK_FAR, ringArea, parkingKind, pickParkings,
   };
 });

@@ -12,7 +12,7 @@ Funziona nel browser, su telefono e computer, senza registrazione e senza server
 - **Divieti a giorni e orari.** I divieti e i limiti che OpenStreetMap riporta con una condizione (per esempio «bus vietati lun–ven 7–19», «massa max 3,5 t dalle 7 alle 20», «chiusa da novembre ad aprile», festivi compresi) vengono confrontati con l'ora stimata di passaggio, che tiene conto delle pause. Ogni divieto risulta *vietato al passaggio*, *a ridosso dell'orario* (entro un'ora), *non in vigore al passaggio* (in una sezione a parte) o *da verificare* se la condizione non è leggibile o dipende dal meteo. Cambiando data o ora di partenza lo stato si aggiorna. La data di partenza viene passata anche al calcolo del percorso, che evita i divieti a orario che conosce. Il calendario nazionale dei divieti per i mezzi pesanti (festivi ed estate) riguarda i veicoli che trasportano merci sopra 7,5 t e non gli autobus: l'app lo ricorda nel riquadro del controllo.
 - **Programma con pause di legge** (Reg. CE 561/2006): 45′ entro 4 h 30 di guida, oppure frazionata 15′ + 30′, oppure doppio autista. Le pause vengono collocate nelle aree di servizio raggiungibili sulla propria carreggiata. Le soste nelle tappe (es. visita di 1 h) contano come pausa. Avvisi oltre 9/10 h di guida e oltre 13 h di impegno.
 - **Permessi e ZTL.** Per ogni tappa l'app riconosce il comune e dice se i bus turistici hanno bisogno di un permesso, di un ticket o di una prenotazione, oppure se l'accesso è vietato. Indica i passaggi per ottenerlo, i costi indicativi, i contatti e i link alle pagine ufficiali. Le città in elenco sono Roma, Firenze, Venezia, Milano, Napoli, Verona, Siena, Pisa, Bologna, Torino, Lucca, Perugia, Bergamo e i comuni della Costiera Amalfitana. Per gli altri comuni l'app avvisa che non ha dati e propone la ricerca delle regole.
-- **Parcheggi bus** segnati su OpenStreetMap entro 1 km dal punto di arrivo.
+- **Parcheggi vicino all'arrivo**, da OpenStreetMap: quelli segnati per bus o mezzi pesanti entro 1 km; se non ce ne sono, i più vicini fino a 5 km. In più, i parcheggi generici grandi e all'aperto entro 1 km (almeno 2.500 m² o 60 posti, esclusi quelli sotterranei, a più piani, privati o con limite di altezza), indicati come *da verificare*, con vista satellite e Street View. Un pulsante apre una nota su OpenStreetMap per segnalare un parcheggio bus mancante.
 - **Indicazioni svolta per svolta**, **GPX** per i navigatori per mezzi pesanti (OsmAnd, Sygic Truck, Garmin…), **link condivisibile** che riapre lo stesso viaggio con lo stesso mezzo, **foglio di viaggio** stampabile.
 
 ## Dati dei limiti scaricati ogni settimana
@@ -20,7 +20,7 @@ Funziona nel browser, su telefono e computer, senza registrazione e senza server
 Per non interrogare i server OpenStreetMap a ogni percorso, la procedura `.github/workflows/dati-limiti.yml` gira ogni lunedì su GitHub Actions:
 
 1. scarica da Geofabrik la mappa OpenStreetMap dell'Italia;
-2. con osmium estrae limiti di altezza, larghezza, lunghezza e peso, divieti per bus e mezzi pesanti (anche quelli a giorni e orari), aree di servizio e parcheggi per bus;
+2. con osmium estrae limiti di altezza, larghezza, lunghezza e peso, divieti per bus e mezzi pesanti (anche quelli a giorni e orari), aree di servizio, parcheggi per bus e parcheggi grandi all'aperto;
 3. con `tools/build-data.js` tiene solo i limiti che riguardano un bus e li divide in riquadri di 0,25° (circa 28 × 20 km);
 4. pubblica il risultato sul ramo `dati`, sovrascrivendolo: lo storico del repository non cresce.
 

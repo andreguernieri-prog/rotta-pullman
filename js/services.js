@@ -341,19 +341,35 @@ ${svc}
     return data.elements;
   }
 
-  /* parcheggi adatti ai bus vicino alle tappe */
+  /*
+   * Parcheggi intorno all'arrivo: quelli per bus o mezzi pesanti fino a "far" metri,
+   * quelli generici all'aperto entro "near" metri (con il perimetro, per stimarne la superficie).
+   * radius: numero (stesso raggio per tutti) oppure { near, far }.
+   */
   async function parkings(points, radius, signal) {
-    const parts = points.map((p) => {
-      const a = `around:${radius},${p.lat.toFixed(6)},${p.lon.toFixed(6)}`;
+    const near = typeof radius === 'number' ? radius : radius.near;
+    const far = typeof radius === 'number' ? radius : radius.far;
+    const at = (p, r) => `around:${r},${p.lat.toFixed(6)},${p.lon.toFixed(6)}`;
+    const bus = points.map((p) => {
+      const a = at(p, far);
       return `  nw(${a})[amenity=parking][~"^(bus|coach|tourist_bus)$"~"^(yes|designated)$"];
   nw(${a})[amenity=parking][parking~"^(bus|coach)"];
   nw(${a})[amenity=parking][hgv~"^(yes|designated)$"];`;
     }).join('\n');
+    const gen = points.map((p) => {
+      const a = at(p, near);
+      return `  way(${a})[amenity=parking][access!~"^(private|no)$"][parking!~"^(underground|multi-storey|rooftop|garage_boxes|carports|sheds|lane|street_side|on_kerb|half_on_kerb)$"];
+  node(${a})[amenity=parking][capacity][access!~"^(private|no)$"];`;
+    }).join('\n');
     const q = `[out:json][timeout:25];
 (
-${parts}
+${bus}
 );
-out body center;`;
+out body center;
+(
+${gen}
+);
+out body geom;`;
     const data = await overpass(q, signal, 35000);
     return data.elements;
   }

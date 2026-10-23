@@ -35,7 +35,7 @@ function serve() {
 
 /* ---------------- servizi simulati ---------------- */
 const VIA_A1 = [[45.4860, 9.2044], [45.40, 9.33], [45.31, 9.50], [45.05, 9.70], [44.80, 10.33], [44.65, 10.93], [44.50, 11.34], [44.25, 11.30], [43.95, 11.20], [43.7629, 11.2650]];
-const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null, tomtomUrls: [], vicino: false, orario: false, dateTimes: [] };
+const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null, tomtomUrls: [], vicino: false, orario: false, dateTimes: [], parkNoBus: false };
 
 function densify(pts, step) {
   const out = [];
@@ -108,6 +108,16 @@ function mockOverpass(data) {
     mocks.parkingQueries.push(found.map((m) => ({ radius: Number(m[1]), lat: Number(m[2]), lon: Number(m[3]) })));
     const pts = found.map((m) => [Number(m[2]), Number(m[3])]);
     const elements = [];
+    if (mocks.parkNoBus) {
+      // paese senza parcheggi per bus vicini: un piazzale grande, uno piccolo, un parcheggio bus a 2,8 km
+      const sq = (lat, lon, m) => { const d = m / 2 / 110540, e = m / 2 / (111320 * Math.cos(lat * Math.PI / 180)); return [[lat - d, lon - e], [lat - d, lon + e], [lat + d, lon + e], [lat + d, lon - e], [lat - d, lon - e]].map(([a, b]) => ({ lat: a, lon: b })); };
+      pts.forEach((p) => {
+        elements.push({ type: 'way', id: 9400, geometry: sq(p[0] + 0.003, p[1], 60), tags: { amenity: 'parking', name: 'Piazzale del mercato', fee: 'no' } });
+        elements.push({ type: 'way', id: 9401, geometry: sq(p[0] + 0.001, p[1], 15), tags: { amenity: 'parking', name: 'Parcheggio piccolo' } });
+        elements.push({ type: 'node', id: 9402, lat: p[0] + 0.025, lon: p[1], tags: { amenity: 'parking', bus: 'designated', name: 'Parcheggio bus Stazione' } });
+      });
+      return { elements };
+    }
     pts.forEach((p, k) => {
       elements.push({ type: 'way', id: 9000 + k, center: { lat: p[0] + 0.002, lon: p[1] + 0.002 }, tags: { amenity: 'parking', bus: 'designated', name: 'Parcheggio bus turistici', fee: 'yes', 'capacity:bus': '18' } });
       elements.push({ type: 'node', id: 9100 + k, lat: p[0] - 0.008, lon: p[1] + 0.001, tags: { amenity: 'parking', hgv: 'yes' } });
@@ -391,11 +401,11 @@ async function setupRoutes(context) {
     assert.match(await bo.textContent(), /Accesso limitato/);
     assert.match(await bo.textContent(), /Tappa B/);
     assert.equal(await p.locator('.pin').count(), 3);
-    // parcheggi: una sola ricerca, intorno all'arrivo, entro 1 km
+    // parcheggi: una sola ricerca, intorno all'arrivo (per bus fino a 5 km, da mostrare entro 1 km)
     await p.waitForFunction(() => /Arrivo · /.test(document.querySelector('#parkings').textContent), null, { timeout: 15000 });
     const lastQ = mocks.parkingQueries[mocks.parkingQueries.length - 1];
     assert.equal(lastQ.length, 1);
-    assert.equal(lastQ[0].radius, 1000);
+    assert.equal(lastQ[0].radius, 5000);
     assert.ok(Math.abs(lastQ[0].lat - 43.7629) < 0.01, 'cerca intorno all\'arrivo');
     assert.doesNotMatch(await p.textContent('#parkings'), /troppo lontano|Bologna/);
     assert.equal(await p.locator('#parkings .pk').count(), 2);
@@ -689,6 +699,35 @@ async function setupRoutes(context) {
     });
     mocks.orario = false;
     await octx.close();
+  }
+
+  /* --- nessun parcheggio per bus entro 1 km: il più vicino oltre, i piazzali grandi, la segnalazione --- */
+  {
+    const pctx = await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: 'it-IT', timezoneId: 'Europe/Rome' });
+    await setupRoutes(pctx);
+    mocks.parkNoBus = true;
+    const q = await pctx.newPage();
+    watch(q, 'parcheggi paese');
+    await q.goto(base);
+    await step('parcheggi in un paese: il più vicino oltre 1 km e i piazzali grandi da verificare', async () => {
+      await q.waitForFunction(() => window.__rp.state.parkings && window.__rp.state.parkings.status === 'done', null, { timeout: 30000 });
+      const txt = await q.textContent('#parkings');
+      assert.match(txt, /Nessun parcheggio per bus segnato su OpenStreetMap entro 1 km/);
+      assert.match(txt, /Il più vicino, oltre 1 km.*Parcheggio bus Stazione.*a 2,8 km dall'arrivo/s);
+      assert.match(txt, /Parcheggi grandi entro 1 km, non segnati per bus.*Piazzale del mercato.*Da verificare.*circa 3\.600 m².*gratuito/s);
+      assert.doesNotMatch(txt, /Parcheggio piccolo/);
+      assert.equal(await q.locator('.pk-marker.gen').count(), 1);
+      assert.equal(await q.locator('.pk-marker:not(.gen)').count(), 1);
+      assert.match(await q.getAttribute('.pk-report a', 'href'), /openstreetmap\.org\/note\/new#map=17\//);
+      await q.locator('#parkings').scrollIntoViewIfNeeded();
+      await q.waitForTimeout(300);
+      await q.screenshot({ path: path.join(OUT, '14-parcheggi-paese.png') });
+      await q.locator('.pk.gen button', { hasText: 'Vista satellite' }).click();
+      await q.waitForFunction(() => window.__rp.state.base === 'satellite');
+      assert.equal(await q.isChecked('#base-satellite'), true);
+    });
+    mocks.parkNoBus = false;
+    await pctx.close();
   }
 
   /* --- tema scuro --- */

@@ -10,7 +10,8 @@
  * Ogni riquadro contiene, in forma compatta:
  *   r: limiti utili ai bus  [rif, geometria (polyline 5), tag]
  *   s: aree di servizio     [rif, lat, lon, 1 = servizio / 0 = sosta, nome]
- *   p: parcheggi per bus    [rif, lat, lon, tag]
+ *   p: parcheggi            [rif, lat, lon, tag]: per bus o mezzi pesanti, e quelli generici grandi
+ *                           all'aperto (tag _a = superficie in m²), che possono andare bene per un pullman
  *
  * Uso: node tools/build-data.js <ingresso.geojsonseq> <cartella> [--poly italy.poly] [--osm-date <data>]
  */
@@ -30,7 +31,7 @@ const COND_TAGS = C.COND_KEYS.map((k) => k + ':conditional');
 const KEEP_R = RESTR_KEYS.concat(ACCESS_KEYS, COND_TAGS, ['motor_vehicle', 'vehicle', 'access', 'psv', 'name', 'ref', 'bridge', 'tunnel', 'layer', 'highway',
   'source', 'source:maxheight', 'source:maxweight', 'source:maxwidth', 'source:maxlength', 'source:hgv',
   'check_date', 'check_date:maxheight', 'check_date:maxweight', 'survey:date']);
-const KEEP_P = ['name', 'fee', 'capacity:bus', 'capacity:coach', 'access', 'opening_hours', 'bus', 'coach', 'tourist_bus', 'hgv', 'parking'];
+const KEEP_P = ['name', 'fee', 'capacity', 'capacity:bus', 'capacity:coach', 'access', 'opening_hours', 'bus', 'coach', 'tourist_bus', 'hgv', 'parking', 'maxheight', 'surface', 'operator'];
 const NON_ROAD = ['amenity', 'shop', 'building', 'tourism', 'leisure', 'man_made', 'office', 'craft'];
 
 /* Un valore di limite può riguardare un bus? Il più alto supera di poco i 4 m, il più pesante le 30 t */
@@ -62,8 +63,23 @@ function relevantRestriction(t) {
 }
 
 function isBusParking(t) {
-  if (t.amenity !== 'parking') return false;
-  return ['bus', 'coach', 'tourist_bus', 'hgv'].some((k) => /^(yes|designated)$/.test(t[k] || '')) || /^(bus|coach)/.test(t.parking || '');
+  const k = C.parkingKind(t, 0);
+  return k === 'bus' || k === 'pesanti';
+}
+
+/* superficie in m² di un poligono GeoJSON (anelli esterni meno i buchi) */
+function areaOf(g) {
+  if (!g) return 0;
+  const ring = (r) => C.ringArea(r.map((c) => [c[1], c[0]]));
+  const poly = (rings) => Math.max(0, ring(rings[0] || []) - rings.slice(1).reduce((s, r) => s + ring(r), 0));
+  if (g.type === 'Polygon') return poly(g.coordinates);
+  if (g.type === 'MultiPolygon') return g.coordinates.reduce((s, p) => s + poly(p), 0);
+  // via chiusa esportata come linea
+  if (g.type === 'LineString' && g.coordinates.length > 3) {
+    const a = g.coordinates[0], b = g.coordinates[g.coordinates.length - 1];
+    if (a[0] === b[0] && a[1] === b[1]) return ring(g.coordinates);
+  }
+  return 0;
 }
 
 function pick(t, keys) {
@@ -117,7 +133,7 @@ function tilesOfBox(pts) {
 function createBuilder() {
   const tiles = new Map();
   const seen = new Set();
-  const stats = { limiti: 0, aree: 0, parcheggi: 0, scartati: 0 };
+  const stats = { limiti: 0, aree: 0, parcheggi: 0, generici: 0, scartati: 0 };
   const get = (k) => {
     let t = tiles.get(k);
     if (!t) { t = { r: [], s: [], p: [] }; tiles.set(k, t); }
@@ -142,13 +158,18 @@ function createBuilder() {
       stats.aree++;
       return;
     }
-    if (isBusParking(t)) {
+    if (t.amenity === 'parking') {
+      const area = areaOf(feature.geometry);
+      const kind = C.parkingKind(t, area);
+      if (!kind) { stats.scartati++; return; }
       if (seen.has('p' + ref)) return;
       seen.add('p' + ref);
       const c = centroid(feature.geometry);
       if (!c) return;
-      get(C.tileKey(c[0], c[1], RIQUADRO)).p.push([ref, r5(c[0]), r5(c[1]), pick(t, KEEP_P)]);
-      stats.parcheggi++;
+      const tags = pick(t, KEEP_P);
+      if (area >= 100) tags._a = String(Math.round(area / 100) * 100);
+      get(C.tileKey(c[0], c[1], RIQUADRO)).p.push([ref, r5(c[0]), r5(c[1]), tags]);
+      if (kind === 'generico') stats.generici++; else stats.parcheggi++;
       return;
     }
     if (type === 'relation') return;
@@ -245,7 +266,7 @@ async function main(argv) {
   }
   fs.writeFileSync(path.join(outDir, 'index.json'), JSON.stringify(index));
   console.log(`Elementi letti: ${n}`);
-  console.log(`Limiti: ${b.stats.limiti} · aree di servizio: ${b.stats.aree} · parcheggi bus: ${b.stats.parcheggi} · scartati: ${b.stats.scartati}`);
+  console.log(`Limiti: ${b.stats.limiti} · aree di servizio: ${b.stats.aree} · parcheggi bus: ${b.stats.parcheggi} · parcheggi grandi generici: ${b.stats.generici} · scartati: ${b.stats.scartati}`);
   console.log(`Riquadri: ${tiles.size} · totale ${(bytes / 1048576).toFixed(1)} MB (non compressi) · il più grande ${maxKey} ${(max / 1024).toFixed(0)} KB`);
   console.log(`Copertura: ${copertura ? copertura.length + ' anelli, ' + copertura.reduce((s, r) => s + r.length, 0) + ' punti' : 'nessuna'}`);
 }
@@ -254,4 +275,4 @@ if (require.main === module) {
   main(process.argv).catch((e) => { console.error(e); process.exit(1); });
 }
 
-module.exports = { createBuilder, parsePoly, relevantRestriction, isBusParking, isoDay, RIQUADRO, VERSIONE };
+module.exports = { createBuilder, parsePoly, relevantRestriction, isBusParking, areaOf, isoDay, RIQUADRO, VERSIONE };

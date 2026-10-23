@@ -976,8 +976,7 @@
     runAnalysis(seq, workCtrl ? workCtrl.signal : undefined, only);
   }
 
-  /* Parcheggi per bus solo intorno al punto di arrivo, entro PARK_RADIUS metri */
-  const PARK_RADIUS = 1000;
+  /* Parcheggi intorno al punto di arrivo: per bus entro 1 km (o il più vicino fino a 5 km), generici grandi entro 1 km */
   const parkCache = new Map();
 
   async function runParkings(my, signal) {
@@ -993,7 +992,7 @@
         if (my !== seq) return;
         if (dati && C.pointInRings(dest.lat, dest.lon, dati.copertura)) {
           try {
-            const tiles = await API.dataTiles(dati, C.tilesAround(dest.lat, dest.lon, PARK_RADIUS, dati.riquadro), signal);
+            const tiles = await API.dataTiles(dati, C.tilesAround(dest.lat, dest.lon, C.PARK_FAR, dati.riquadro), signal);
             els = tiles.flatMap(C.tileToElements).filter((e) => e.tags && e.tags.amenity === 'parking');
             parkCache.set(cacheKey, els);
           } catch (e) {
@@ -1004,7 +1003,7 @@
       }
       for (let attempt = 0; !els; attempt++) {
         try {
-          els = await API.parkings(pts, PARK_RADIUS, signal);
+          els = await API.parkings(pts, { near: C.PARK_NEAR, far: C.PARK_FAR }, signal);
           parkCache.set(cacheKey, els);
           break;
         } catch (e) {
@@ -1020,25 +1019,8 @@
         }
       }
       if (my !== seq) return;
-      const seen = new Set();
-      const groups = pts.map((p) => ({ stop: p.i, items: [] }));
-      for (const el of els) {
-        const key = el.type + '/' + el.id;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const c = el.center || (el.lat != null ? { lat: el.lat, lon: el.lon } : null);
-        if (!c) continue;
-        let best = null;
-        pts.forEach((p, k) => {
-          const d = C.haversine([p.lat, p.lon], [c.lat, c.lon]);
-          if (!best || d < best.d) best = { k, d };
-        });
-        if (!best || best.d > PARK_RADIUS) continue;
-        const t = el.tags || {};
-        const busTag = /^(yes|designated)$/.test(t.bus || '') || /^(yes|designated)$/.test(t.coach || '') || /^(yes|designated)$/.test(t.tourist_bus || '') || /^(bus|coach)/.test(t.parking || '');
-        groups[best.k].items.push({ id: key, lat: c.lat, lon: c.lon, d: best.d, tags: t, bus: busTag });
-      }
-      for (const g of groups) g.items.sort((a, b) => (a.bus === b.bus ? a.d - b.d : a.bus ? -1 : 1)).splice(6);
+      const pk = C.pickParkings(els, dest);
+      const groups = [{ stop: last, items: pk.near, far: pk.far, generic: pk.generic }];
       state.parkings = { status: 'done', groups };
     } catch (e) {
       if (my !== seq || e.code === 'aborted') return;
@@ -1287,29 +1269,35 @@
 
   function parkingName(it) {
     const t = it.tags;
-    return t.name || (it.bus ? 'Parcheggio bus' : 'Parcheggio mezzi pesanti');
+    return t.name || (it.kind === 'bus' ? 'Parcheggio bus' : it.kind === 'pesanti' ? 'Parcheggio mezzi pesanti' : 'Parcheggio');
   }
   function parkingMeta(it) {
     const t = it.tags, out = [];
-    out.push(`a ${C.fmtDist(it.d)}`);
+    out.push(`a ${C.fmtDist(it.d)}${it.d > C.PARK_NEAR ? ' dall\'arrivo' : ''}`);
+    if (it.kind === 'generico') {
+      if (it.area) out.push(`circa ${it.area.toLocaleString('it-IT')} m²`);
+      if (t.capacity) out.push(`${t.capacity} posti auto`);
+    }
     if (t.fee === 'yes') out.push('a pagamento');
     else if (t.fee === 'no') out.push('gratuito');
     if (t['capacity:bus'] || t['capacity:coach']) out.push(`${t['capacity:bus'] || t['capacity:coach']} posti bus`);
     if (t.access === 'private' || t.access === 'customers') out.push(t.access === 'private' ? 'privato' : 'solo clienti');
     if (t.opening_hours) out.push(t.opening_hours);
-    if (!it.bus) out.push('verifica che accetti bus');
+    if (it.kind === 'pesanti') out.push('verifica che accetti bus');
     return out.join(' · ');
   }
+  const PARK_MARK = { bus: 'P<small>BUS</small>', pesanti: 'P<small>BUS</small>', generico: 'P<small>?</small>' };
 
   function drawParkings() {
     lg.parks.clearLayers();
     const p = state.parkings;
     if (!p || p.status !== 'done') return;
     for (const g of p.groups) {
-      for (const it of g.items) {
-        const icon = L.divIcon({ className: '', html: '<div class="pk-marker">P<small>BUS</small></div>', iconSize: [30, 30], iconAnchor: [15, 15], popupAnchor: [0, -14] });
-        L.marker([it.lat, it.lon], { icon, zIndexOffset: 200, title: parkingName(it) })
-          .bindPopup(() => popupBox(parkingName(it), parkingMeta(it)))
+      for (const it of g.items.concat(g.far || [], g.generic || [])) {
+        const gen = it.kind === 'generico';
+        const icon = L.divIcon({ className: '', html: `<div class="pk-marker${gen ? ' gen' : ''}">${PARK_MARK[it.kind]}</div>`, iconSize: [30, 30], iconAnchor: [15, 15], popupAnchor: [0, -14] });
+        L.marker([it.lat, it.lon], { icon, zIndexOffset: gen ? 150 : 200, title: parkingName(it) + (gen ? ' (non segnato per bus)' : '') })
+          .bindPopup(() => popupBox(parkingName(it), parkingMeta(it), gen ? h('span', { text: 'Non segnato per bus: verifica che ci sia spazio per un pullman.' }) : null))
           .addTo(lg.parks);
       }
     }
@@ -1805,25 +1793,52 @@
       if (p.detail) ul.append(h('li', { class: 'err-detail', text: 'Dettagli: ' + p.detail }));
       return;
     }
-    let any = false;
     for (const g of p.groups) {
       const s = r.stops[g.stop];
+      const far = g.far || [], generic = g.generic || [];
       ul.append(h('li', { class: 'pk-group', text: `Arrivo · ${s.label || 'destinazione'}` }));
-      if (!g.items.length) { ul.append(h('li', { class: 'none' }, 'Nessun parcheggio per bus segnato su OpenStreetMap entro 1 km dall\'arrivo.')); continue; }
-      any = true;
-      for (const it of g.items) {
-        ul.append(h('li', { class: 'pk' },
-          h('span', { class: 'pk-icon', 'aria-hidden': 'true' }, 'P'),
-          h('div', { class: 'hz-body' },
-            h('span', { class: 'hz-title', text: parkingName(it) }),
-            h('span', { class: 'hz-meta', text: parkingMeta(it) }),
-            h('span', { class: 'hz-links' },
-              h('button', { type: 'button', onclick: () => flyTo(it.lat, it.lon, 17) }, 'Mostra sulla mappa'),
-              h('a', { href: `https://www.google.com/maps/dir/?api=1&destination=${it.lat.toFixed(6)},${it.lon.toFixed(6)}`, target: '_blank', rel: 'noopener' }, 'Naviga'),
-              h('a', { href: `https://www.openstreetmap.org/${it.id}`, target: '_blank', rel: 'noopener' }, 'Dati OSM')))));
+      if (g.items.length) for (const it of g.items) ul.append(parkingItem(it));
+      else ul.append(h('li', { class: 'none' }, 'Nessun parcheggio per bus segnato su OpenStreetMap entro 1 km dall\'arrivo.'));
+      if (far.length) {
+        ul.append(h('li', { class: 'pk-sub', text: far.length === 1 ? 'Il più vicino, oltre 1 km' : 'I più vicini, oltre 1 km' }));
+        for (const it of far) ul.append(parkingItem(it));
       }
+      if (generic.length) {
+        ul.append(h('li', { class: 'pk-sub', text: 'Parcheggi grandi entro 1 km, non segnati per bus' }),
+          h('li', { class: 'hint', text: 'Possono andare bene per un pullman, ma nessuno lo ha indicato: controlla con la vista satellite o Street View lo spazio di manovra, l\'ingresso e i cartelli.' }));
+        for (const it of generic) ul.append(parkingItem(it));
+      }
+      const hasBus = g.items.concat(far).some((it) => it.kind === 'bus');
+      if (!g.items.length) ul.append(h('li', { class: 'hint', text: 'Suggerimento: chiedi alla struttura di arrivo o cerca “parcheggio bus turistici” sul sito del comune.' }));
+      ul.append(h('li', { class: 'pk-report' },
+        h('span', { text: hasBus ? 'Conosci un altro parcheggio adatto ai bus qui vicino?' : 'Conosci un parcheggio adatto ai bus qui vicino?' }),
+        h('a', { href: `https://www.openstreetmap.org/note/new#map=17/${s.lat.toFixed(6)}/${s.lon.toFixed(6)}`, target: '_blank', rel: 'noopener' }, 'Segnala un parcheggio bus'),
+        h('span', { class: 'hz-meta', text: 'Si apre una nota su OpenStreetMap: scrivi dov\'è, quanti pullman ci stanno e se è a pagamento. Un volontario la aggiunge alla mappa, per tutti.' })));
     }
-    if (!any && p.groups.length) ul.append(h('li', { class: 'hint' }, 'Suggerimento: cerca “parcheggio bus turistici” sul sito del comune di destinazione.'));
+  }
+
+  function parkingItem(it) {
+    const gen = it.kind === 'generico';
+    const at = `${it.lat.toFixed(6)},${it.lon.toFixed(6)}`;
+    return h('li', { class: 'pk' + (gen ? ' gen' : '') },
+      h('span', { class: 'pk-icon', 'aria-hidden': 'true' }, 'P'),
+      h('div', { class: 'hz-body' },
+        h('span', { class: 'hz-title' }, parkingName(it), gen ? h('span', { class: 'sev sev-amber-bg', text: 'Da verificare' }) : null),
+        h('span', { class: 'hz-meta', text: parkingMeta(it) }),
+        h('span', { class: 'hz-links' },
+          h('button', { type: 'button', onclick: () => flyTo(it.lat, it.lon, 17) }, 'Mostra sulla mappa'),
+          gen ? h('button', { type: 'button', onclick: () => showSatellite(it.lat, it.lon) }, 'Vista satellite') : null,
+          gen ? h('a', { href: `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${at}`, target: '_blank', rel: 'noopener' }, 'Street View') : null,
+          h('a', { href: `https://www.google.com/maps/dir/?api=1&destination=${at}`, target: '_blank', rel: 'noopener' }, 'Naviga'),
+          h('a', { href: `https://www.openstreetmap.org/${it.id}`, target: '_blank', rel: 'noopener' }, 'Dati OSM'))));
+  }
+
+  /* passa alla vista satellite e inquadra il punto */
+  function showSatellite(lat, lon) {
+    setBase('satellite');
+    const radio = document.getElementById('base-satellite');
+    if (radio) radio.checked = true;
+    flyTo(lat, lon, 18);
   }
 
   function renderSteps() {
