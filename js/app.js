@@ -927,9 +927,15 @@
         a.lastDetail = e.detail;
       }
       a.done++;
-      Object.assign(a, C.analyzeElements(Array.from(elements.values()), r.index, r.vehicle));
-      for (const sv of a.services) sv.T = C.timeAtAlong(r, sv.along);
-      drawHazards(); renderCheck(); renderHazards(); renderMini();
+      // con i dati scaricati i tratti arrivano in pochi millisecondi: si rianalizza al massimo una volta al secondo
+      const lastOne = a.done === todo.length;
+      if (lastOne || Date.now() - (a.analyzedAt || 0) > 1000) {
+        Object.assign(a, C.analyzeElements(Array.from(elements.values()), r.index, r.vehicle));
+        for (const sv of a.services) sv.T = C.timeAtAlong(r, sv.along);
+        a.analyzedAt = Date.now();
+        drawHazards(); renderHazards(); renderMini();
+      }
+      renderCheck();
     }
     a.status = !a.failed.length ? 'done' : (a.failed.length === todo.length && !elements.size ? 'error' : 'partial');
     if (a.status === 'error') a.reason = a.lastError;
