@@ -325,3 +325,65 @@ test('confronto con TomTom: tratti evitati e conferme', () => {
   assert.equal(cmp2.verdict(0.5 * route.distanceM, 0.5 * route.distanceM), 'altrove');
   assert.match(C.hazardAdvice({ kind: 'tomtom', severity: 'amber' }), /TomTom/);
 });
+
+/* percorso rettilineo da un punto, con direzione (gradi da nord) e passo in metri */
+function lineFrom(center, bearingDeg, halfLenM, stepM) {
+  const kx = 111320 * Math.cos(center[0] * Math.PI / 180), ky = 110540;
+  const b = bearingDeg * Math.PI / 180, out = [];
+  for (let d = -halfLenM; d <= halfLenM + 1e-6; d += stepM) out.push([center[0] + (Math.cos(b) * d) / ky, center[1] + (Math.sin(b) * d) / kx]);
+  return out;
+}
+
+test('caso reale: la strada sotto il Viadotto Opolo (SP510) non è sul percorso', () => {
+  // via 736359248, maxheight 3,5 m, passa sotto il viadotto con un angolo di circa 20°
+  const geometry = [{ lat: 45.73596, lon: 10.10429 }, { lat: 45.73614, lon: 10.10365 }, { lat: 45.73616, lon: 10.10341 }];
+  const viadotto = lineFrom([45.73605, 10.10397], -48, 400, 30);
+  const idx = new C.RouteIndex(viadotto);
+  const rel = C.wayRelation(geometry, idx);
+  assert.equal(rel.onRoute, false);
+  const a = C.analyzeElements([{ type: 'way', id: 736359248, tags: { highway: 'unclassified', maxheight: '3.5' }, geometry }], idx, veh);
+  assert.equal(a.hazards.length, 0);
+  assert.equal(a.checked, 0);
+});
+
+test('caso reale: le barriere di Piazzale Funivia accanto alla SS39 non sono sul percorso', () => {
+  const nodo = { type: 'node', id: 5014382273, lat: 46.15684, lon: 10.16537, tags: { maxheight: '2.2' } };
+  // la statale passa a circa 4 m dal nodo, senza passarci sopra
+  const ss39 = lineFrom([46.15684, 10.16537 + 4 / 77150], 0, 300, 25);
+  const a = C.analyzeElements([nodo], new C.RouteIndex(ss39), veh);
+  assert.equal(a.hazards.length, 0);
+  // se invece il nodo è un punto della strada percorsa, il limite vale
+  const sulla = lineFrom([46.15684, 10.16537], 0, 300, 25);
+  const b = C.analyzeElements([nodo], new C.RouteIndex(sulla), veh);
+  assert.equal(b.hazards.length, 1);
+  assert.equal(b.hazards[0].severity, 'red');
+});
+
+test('i limiti veri sul percorso restano segnalati', () => {
+  const route = straightRoute(45, 9, 100, 0.001);
+  const idx = new C.RouteIndex(route);
+  // via che coincide con un tratto del percorso
+  assert.equal(C.wayRelation([{ lat: 45.02, lon: 9 }, { lat: 45.021, lon: 9 }, { lat: 45.022, lon: 9 }], idx).onRoute, true);
+  // via semplificata: salta un nodo intermedio (corda), resta sul percorso
+  assert.equal(C.wayRelation([{ lat: 45.03, lon: 9 }, { lat: 45.034, lon: 9 }], idx).onRoute, true);
+  // via che tocca il percorso in un solo punto (incrocio) e poi se ne va
+  assert.equal(C.wayRelation([{ lat: 45.04, lon: 9 }, { lat: 45.04, lon: 9.002 }], idx).onRoute, false);
+  // via parallela a 10 m
+  assert.equal(C.wayRelation([{ lat: 45.05, lon: 9.00013 }, { lat: 45.06, lon: 9.00013 }], idx).onRoute, false);
+});
+
+test('partenza a metà di un tratto limitato: il limite vale', () => {
+  // il percorso parte a metà del ponte (via da 44.9995 a 45.001), il primo nodo della via è prima della partenza
+  const route = [[45.0005, 9]].concat(straightRoute(45.001, 9, 50, 0.001));
+  const idx = new C.RouteIndex(route);
+  const rel = C.wayRelation([{ lat: 44.9995, lon: 9 }, { lat: 45.001, lon: 9 }], idx);
+  assert.equal(rel.onRoute, true);
+  assert.equal(rel.alongStart, 0);
+});
+
+test('nome della strada percorsa in un punto', () => {
+  const coords = straightRoute(45, 9, 10, 0.001);
+  const r = C.finishRoute({ coords, steps: [{ from: 0, to: 5, durS: 50, streets: 'SS39' }, { from: 5, to: 9, durS: 40, streets: 'Via Roma' }], legEnds: [0, 9], durationS: 90, flags: {}, engine: 'x' });
+  assert.equal(C.streetAtAlong(r, 100), 'SS39');
+  assert.equal(C.streetAtAlong(r, 700), 'Via Roma');
+});

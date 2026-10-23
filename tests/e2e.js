@@ -77,7 +77,7 @@ function mockValhalla(url) {
     for (let k = 0; k < cuts.length - 1; k++) {
       let segLen = 0;
       for (let j = cuts[k] + 1; j <= cuts[k + 1]; j++) segLen += C.haversine(shape[j - 1], shape[j]);
-      maneuvers.push({ type: [1, 10, 18, 24, 20, 26][k], instruction: INSTR[k], time: segLen / (85 / 3.6), length: segLen / 1000, begin_shape_index: cuts[k], end_shape_index: cuts[k + 1] });
+      maneuvers.push({ type: [1, 10, 18, 24, 20, 26][k], instruction: INSTR[k], street_names: [['Via Vittor Pisani'], ['Viale Brianza'], ['A1'], ['A1', 'E35'], ['Via Senese'], ['Viale Galileo']][k], time: segLen / (85 / 3.6), length: segLen / 1000, begin_shape_index: cuts[k], end_shape_index: cuts[k + 1] });
     }
     maneuvers.push({ type: 5, instruction: 'La destinazione è sulla destra.', time: 0, length: 0, begin_shape_index: shape.length - 1, end_shape_index: shape.length - 1 });
     legs.push({ shape: C.encodePolyline(shape, 6), maneuvers, summary: { length: len / 1000, time } });
@@ -327,7 +327,7 @@ async function setupRoutes(context) {
     await p.waitForSelector('.hz-popup .hzpop', { timeout: 5000 });
     const card = await p.textContent('.hz-popup .hzpop');
     assert.match(card, /Divieto per mezzi pesanti/);
-    assert.match(card, /Via dei Colli/);
+    assert.match(card, /Strada percorsa\s*A1, E35\s*Strada del limite\s*Via dei Colli/);
     assert.match(card, /Ci arrivi/);
     assert.match(card, /Cosa fare: .*camion.*autobus/s);
     await p.waitForFunction(() => /Viale Galileo/.test(document.querySelector('.hz-popup .hzpop').textContent), null, { timeout: 5000 });

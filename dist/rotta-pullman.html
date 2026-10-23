@@ -1588,6 +1588,29 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
     return best;
   };
 
+  /* vertice del percorso più vicino entro maxDist metri: il percorso passa per tutti i nodi OSM delle strade che usa */
+  RouteIndex.prototype.nearestVertex = function (lat, lon, maxDist) {
+    const cell = this.cell;
+    const cy = Math.floor(lat / cell), cx = Math.floor(lon / cell);
+    const { kx, ky } = metersPerDeg(lat);
+    const ry = Math.ceil(maxDist / (cell * ky)), rx = Math.ceil(maxDist / (cell * kx));
+    let best = null;
+    for (let y = cy - ry; y <= cy + ry; y++) {
+      for (let x = cx - rx; x <= cx + rx; x++) {
+        const list = this.grid.get(cellKey(y, x));
+        if (!list) continue;
+        for (const i of list) {
+          for (const j of [i, i + 1]) {
+            const v = this.coords[j];
+            const d = Math.hypot((v[1] - lon) * kx, (v[0] - lat) * ky);
+            if (d <= maxDist && (!best || d < best.dist)) best = { dist: d, index: j, along: this.cumD[j] };
+          }
+        }
+      }
+    }
+    return best;
+  };
+
   /* il percorso passa entro marginM metri dal rettangolo? (filtro veloce, può dare falsi positivi) */
   RouteIndex.prototype.nearBox = function (minLat, minLon, maxLat, maxLon, marginM) {
     const { kx, ky } = metersPerDeg((minLat + maxLat) / 2);
@@ -1705,6 +1728,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
           from: offset + (m.begin_shape_index || 0),
           to: offset + (m.end_shape_index || 0),
           icon: VALHALLA_ANGLE[m.type] != null ? VALHALLA_ANGLE[m.type] : 0,
+          streets: (m.street_names || []).join(', '),
         });
       }
       legEnds.push(coords.length - 1);
@@ -1734,6 +1758,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
           from: st.way_points ? st.way_points[0] : 0,
           to: st.way_points ? st.way_points[1] : 0,
           icon: ORS_ANGLE[st.type] != null ? ORS_ANGLE[st.type] : 0,
+          streets: st.name && st.name !== '-' ? st.name : '',
         });
       }
     }
@@ -1762,6 +1787,13 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
   }
 
   function timeAtAlong(route, along) { return interp(route.cumD, route.cumT, along); }
+
+  /* nome della strada percorsa in un punto (dalle manovre del calcolo) */
+  function streetAtAlong(route, along) {
+    const i = route.index.indexAt(along);
+    for (const st of route.steps || []) if (st.from <= i && i < st.to) return st.streets || '';
+    return '';
+  }
   function alongAtTime(route, T) { return interp(route.cumT, route.cumD, T); }
 
   /* ------------------------------------------------------------------ */
@@ -1975,34 +2007,71 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
   }
 
   /* Una via OSM corre lungo il percorso, lo attraversa o nessuna delle due? */
+  /* distanza in metri di un punto da un segmento */
+  function pointSegDist(p, a, b) {
+    const { kx, ky } = metersPerDeg(p[0]);
+    const ax = (a[1] - p[1]) * kx, ay = (a[0] - p[0]) * ky, bx = (b[1] - p[1]) * kx, by = (b[0] - p[0]) * ky;
+    const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy;
+    let t = L2 > 0 ? -(ax * dx + ay * dy) / L2 : 0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    return Math.hypot(ax + t * dx, ay + t * dy);
+  }
+
+  /*
+   * Una via OSM fa parte del percorso solo se ne condivide almeno un tratto intero: due punti
+   * consecutivi della via sul percorso, con il tratto in mezzo allineato. Il percorso passa
+   * infatti per i nodi delle strade che usa. Una strada che passa sotto un viadotto o corre
+   * accanto, anche quasi parallela, non condivide tratti e viene esclusa.
+   * Alla partenza e all'arrivo il percorso può cominciare a metà di un tratto: basta un punto.
+   * "crosses" indica una via che passa vicino senza condividere tratti (per i ponti sopra il percorso).
+   */
   function wayRelation(geom, idx, tol) {
-    tol = tol || 6;
+    tol = tol || 3.5;
     const pts = geom.map((g) => [g.lat, g.lon]);
     let total = 0;
     for (let i = 0; i < pts.length - 1; i++) total += haversine(pts[i], pts[i + 1]);
-    const step = Math.min(50, Math.max(4, total / 150));
-    let alignedLen = 0, near = false, minA = Infinity, maxA = -Infinity, firstPt = null;
+    const onR = pts.map((p) => idx.nearest(p[0], p[1], tol));
+    const ends = idx.coords.length ? [[idx.coords[0], 0], [idx.coords[idx.coords.length - 1], idx.total]] : [];
+    let shared = 0, minA = Infinity, maxA = -Infinity;
     for (let i = 0; i < pts.length - 1; i++) {
       const a = pts[i], b = pts[i + 1];
       const len = haversine(a, b);
-      if (len <= 0) continue;
+      if (len < 0.5) continue;
       const wb = bearing(a, b);
-      const n = Math.max(1, Math.ceil(len / step));
-      for (let k = 0; k < n; k++) {
-        const t = (k + 0.5) / n;
-        const p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
-        const r = idx.nearest(p[0], p[1], tol);
-        if (!r) continue;
-        near = true;
-        if (axisDiff(wb, r.bearing) < 25 * RAD) {
-          alignedLen += len / n;
-          if (r.along < minA) { minA = r.along; firstPt = p; }
-          if (r.along > maxA) maxA = r.along;
+      const ra = onR[i], rb = onR[i + 1];
+      let range = null;
+      if (ra && rb) {
+        const rm = idx.nearest((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, tol);
+        if (rm && axisDiff(wb, rm.bearing) < 20 * RAD) range = [Math.min(ra.along, rb.along), Math.max(ra.along, rb.along)];
+      } else if (ra || rb) {
+        const r = ra || rb;
+        for (const [P, alongP] of ends) {
+          if (pointSegDist(P, a, b) > tol) continue;
+          const rp = idx.nearest(P[0], P[1], tol);
+          if (rp && axisDiff(wb, rp.bearing) < 20 * RAD) range = [Math.min(r.along, alongP), Math.max(r.along, alongP)];
+        }
+      }
+      if (!range) continue;
+      shared += len;
+      minA = Math.min(minA, range[0]);
+      maxA = Math.max(maxA, range[1]);
+    }
+    let near = false;
+    if (!shared) {
+      const step = Math.min(50, Math.max(4, total / 150));
+      for (let i = 0; i < pts.length - 1 && !near; i++) {
+        const a = pts[i], b = pts[i + 1];
+        const n = Math.max(1, Math.ceil(haversine(a, b) / step));
+        for (let k = 0; k <= n && !near; k++) {
+          const t = k / n;
+          if (idx.nearest(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, 6)) near = true;
         }
       }
     }
-    const onRoute = alignedLen >= Math.min(20, total * 0.5) && alignedLen > 0;
-    return { onRoute, crosses: near && !onRoute, alongStart: minA, alongEnd: maxA, point: firstPt, length: total };
+    return {
+      onRoute: shared > 0, crosses: near && !shared, alongStart: minA, alongEnd: maxA,
+      point: shared > 0 ? idx.pointAt(minA) : null, length: total, shared,
+    };
   }
 
   /*
@@ -2033,9 +2102,10 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
       if (!hasRestrictionTags(tags)) continue;
       let rel;
       if (el.type === 'node') {
-        const r = idx.nearest(el.lat, el.lon, 6);
-        if (!r) continue;
-        rel = { onRoute: true, alongStart: r.along, alongEnd: r.along, point: [el.lat, el.lon] };
+        // il nodo deve essere un punto della strada percorsa, non una barriera su una laterale vicina
+        const v = idx.nearestVertex(el.lat, el.lon, 2.5);
+        if (!v) continue;
+        rel = { onRoute: true, alongStart: v.along, alongEnd: v.along, point: [el.lat, el.lon] };
       } else if (el.geometry && el.geometry.length > 1) {
         let a0 = Infinity, o0 = Infinity, a1 = -Infinity, o1 = -Infinity;
         for (const g of el.geometry) { if (g.lat < a0) a0 = g.lat; if (g.lat > a1) a1 = g.lat; if (g.lon < o0) o0 = g.lon; if (g.lon > o1) o1 = g.lon; }
@@ -2444,7 +2514,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
   return {
     PRESETS, LIMITS, RULES, sanitizeVehicle,
     haversine, bearing, decodePolyline, encodePolyline, simplify, RouteIndex,
-    buildCumTime, splitByDistance, normalizeValhalla, normalizeOrs, finishRoute, timeAtAlong, alongAtTime,
+    buildCumTime, splitByDistance, normalizeValhalla, streetAtAlong, normalizeOrs, finishRoute, timeAtAlong, alongAtTime,
     parseLength, parseWeight, evaluateTags, hazardAdvice, hasRestrictionTags, osmMeta, sourceLabel, hazardDoubts, compareRoutes, wayRelation, analyzeElements,
     planTrip, fmtDur, fmtDist, fmtClock, fmtNum, stopLetter, parseCoords,
     buildGpx, encodeShare, decodeShare, normName, matchPermit, groupPermits,
@@ -4366,7 +4436,7 @@ out body center;`;
 
   function hazardWhereShort(hz) {
     const eta = clockAtAlong(hz.alongStart);
-    return [hz.name || (hz.kind === 'tomtom' ? 'strada non indicata' : 'strada senza nome'), hazardKm(hz), eta ? 'verso le ' + C.fmtClock(eta, depMs()) : ''].filter(Boolean).join(' · ');
+    return [hz.name || C.streetAtAlong(state.route, hz.alongStart) || 'strada senza nome', hazardKm(hz), eta ? 'verso le ' + C.fmtClock(eta, depMs()) : ''].filter(Boolean).join(' · ');
   }
 
   function streetViewUrl(hz) {
@@ -4447,7 +4517,10 @@ out body center;`;
         .then((label) => { placeNames.set(hz.ids[0], label || 'non disponibile'); near.textContent = label || 'non disponibile'; refreshPopup(); })
         .catch(() => { near.textContent = 'non disponibile'; });
     }
-    const rows = [['Strada', hz.name || (isOsm ? 'senza nome' : 'non indicata')], ['Posizione', hazardKm(hz) + ' dalla partenza'], ['Vicino a', near]];
+    const percorsa = C.streetAtAlong(state.route, hz.alongStart);
+    const rows = [['Strada percorsa', percorsa || 'non indicata']];
+    if (isOsm) rows.push(['Strada del limite', hz.name || 'senza nome']);
+    rows.push(['Posizione', hazardKm(hz) + ' dalla partenza'], ['Vicino a', near]);
     if (eta) rows.push(['Ci arrivi', 'verso le ' + C.fmtClock(eta, depMs())]);
     if (span > 150) rows.push(['Tratto', C.fmtDist(span)]);
     return h('div', { class: 'hzpop' },

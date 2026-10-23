@@ -1093,7 +1093,7 @@
 
   function hazardWhereShort(hz) {
     const eta = clockAtAlong(hz.alongStart);
-    return [hz.name || (hz.kind === 'tomtom' ? 'strada non indicata' : 'strada senza nome'), hazardKm(hz), eta ? 'verso le ' + C.fmtClock(eta, depMs()) : ''].filter(Boolean).join(' · ');
+    return [hz.name || C.streetAtAlong(state.route, hz.alongStart) || 'strada senza nome', hazardKm(hz), eta ? 'verso le ' + C.fmtClock(eta, depMs()) : ''].filter(Boolean).join(' · ');
   }
 
   function streetViewUrl(hz) {
@@ -1174,7 +1174,10 @@
         .then((label) => { placeNames.set(hz.ids[0], label || 'non disponibile'); near.textContent = label || 'non disponibile'; refreshPopup(); })
         .catch(() => { near.textContent = 'non disponibile'; });
     }
-    const rows = [['Strada', hz.name || (isOsm ? 'senza nome' : 'non indicata')], ['Posizione', hazardKm(hz) + ' dalla partenza'], ['Vicino a', near]];
+    const percorsa = C.streetAtAlong(state.route, hz.alongStart);
+    const rows = [['Strada percorsa', percorsa || 'non indicata']];
+    if (isOsm) rows.push(['Strada del limite', hz.name || 'senza nome']);
+    rows.push(['Posizione', hazardKm(hz) + ' dalla partenza'], ['Vicino a', near]);
     if (eta) rows.push(['Ci arrivi', 'verso le ' + C.fmtClock(eta, depMs())]);
     if (span > 150) rows.push(['Tratto', C.fmtDist(span)]);
     return h('div', { class: 'hzpop' },
