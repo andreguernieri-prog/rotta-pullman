@@ -1983,7 +1983,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
   const DAY_CODES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa']; // come Date.getDay()
   const MONTH_CODES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const MON = '(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)';
-  const DATE_RE = new RegExp('^' + MON + '(?:\\s+(\\d{1,2})(?![:\\d]))?(?:\\s*-\\s*(?:' + MON + '(?:\\s+(\\d{1,2})(?![:\\d]))?|(\\d{1,2})(?![:\\d])))?');
+  const DATE_RE = new RegExp('^(?:(\\d{4})\\s+)?' + MON + '(?:\\s+(\\d{1,2})(?!\\d|:\\d))?(?:\\s*-\\s*(?:(?:(\\d{4})\\s+)?' + MON + '(?:\\s+(\\d{1,2})(?!\\d|:\\d))?|(\\d{1,2})(?!\\d|:\\d)))?');
   const DAY_RE = /^(?:(Mo|Tu|We|Th|Fr|Sa|Su)(?:\s*-\s*(Mo|Tu|We|Th|Fr|Sa|Su))?|(PH|SH))(?![\w[])/;
   const TIME_TOKEN = '(\\d{1,2}:\\d{2}|sunrise|sunset|dawn|dusk)';
   const TIME_RE = new RegExp('^' + TIME_TOKEN + '\\s*(?:-\\s*' + TIME_TOKEN + '|(\\+))');
@@ -1997,14 +1997,17 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
     const r = { years: null, dates: null, days: null, ph: false, sh: false, times: null, off: false, unknown: false };
     let m;
     if (eat(/^24\/7/)) { /* sempre */ }
-    if ((m = eat(/^(\d{4})(?:\s*-\s*(\d{4}))?(?=\s|$)/))) r.years = [+m[1], +(m[2] || m[1])];
+    if ((m = eat(/^(\d{4})(?:\s*-\s*(\d{4}))?(?=\s|$)(?!\s+[A-Z][a-z]{2}\b)/))) r.years = [+m[1], +(m[2] || m[1])];
     while ((m = eat(DATE_RE))) {
-      const m1 = MONTH_CODES.indexOf(m[1]) + 1, d1 = m[2] ? +m[2] : null;
-      const m2 = m[3] ? MONTH_CODES.indexOf(m[3]) + 1 : m1;
-      const d2 = m[4] ? +m[4] : m[5] ? +m[5] : m[3] ? 31 : d1 != null ? d1 : 31;
-      (r.dates = r.dates || []).push([m1 * 100 + (d1 || 1), m2 * 100 + d2]);
+      // m: anno1, mese1, giorno1, anno2, mese2, giorno2, giorno2 nello stesso mese
+      const y1 = m[1] ? +m[1] : null, m1 = MONTH_CODES.indexOf(m[2]) + 1, d1 = m[3] ? +m[3] : null;
+      const y2 = m[4] ? +m[4] : y1, m2 = m[5] ? MONTH_CODES.indexOf(m[5]) + 1 : m1;
+      const d2 = m[6] ? +m[6] : m[7] ? +m[7] : m[5] ? 31 : d1 != null ? d1 : 31;
+      const a = m1 * 100 + (d1 || 1), b = m2 * 100 + d2;
+      (r.dates = r.dates || []).push(y1 ? [y1 * 10000 + a, y2 * 10000 + b, true] : [a, b]);
       if (!eat(/^,/)) break;
     }
+    if (r.dates || r.years) eat(/^:/); // "Jun 22-Sep 12: Mo-Su 16:00-24:00"
     while ((m = eat(DAY_RE))) {
       if (m[3] === 'PH') r.ph = true;
       else if (m[3] === 'SH') r.sh = true;
@@ -2015,10 +2018,11 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
       }
       if (!eat(/^,/)) break;
     }
+    if (eat(/^24\/7/)) { /* tutto il giorno */ }
     while ((m = eat(TIME_RE))) {
       const t = (x) => (/:/.test(x) ? (() => { const [hh, mm] = x.split(':').map(Number); return hh * 60 + mm; })() : x);
       (r.times = r.times || []).push([t(m[1]), m[3] ? 24 * 60 : t(m[2])]);
-      if (!eat(/^,/)) break;
+      eat(/^,/); // fasce separate da virgola o da spazio
     }
     if ((m = eat(/^(off|closed|open|unknown)\b/i))) {
       const mod = m[1].toLowerCase();
@@ -2028,8 +2032,11 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
     return s ? null : r; // testo non riconosciuto
   }
 
+  const OH_WORDS = DAY_CODES.concat(MONTH_CODES, ['PH', 'SH']);
   function parseOH(str) {
-    const s = String(str).replace(/"[^"]*"/g, ' ').trim();
+    const s = String(str).replace(/"[^"]*"/g, ' ')
+      .replace(/\b[a-z]{2,3}\b/gi, (w) => OH_WORDS.find((x) => x.toLowerCase() === w.toLowerCase()) || w)
+      .trim();
     if (!s) return null;
     const rules = [];
     for (const part of s.split(/\s*(?:;|\|\|)\s*/)) {
@@ -2064,7 +2071,8 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
     if (r.years && (d.getFullYear() < r.years[0] || d.getFullYear() > r.years[1])) return false;
     if (r.dates) {
       const md = (d.getMonth() + 1) * 100 + d.getDate();
-      if (!r.dates.some(([a, b]) => (a <= b ? md >= a && md <= b : md >= a || md <= b))) return false;
+      const ymd = d.getFullYear() * 10000 + md;
+      if (!r.dates.some(([a, b, withYear]) => (withYear ? ymd >= a && ymd <= b : a <= b ? md >= a && md <= b : md >= a || md <= b))) return false;
     }
     if (!r.days && !r.ph && !r.sh) return true;
     if (r.days && r.days.has(d.getDay())) return true;
@@ -2109,6 +2117,29 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
   }
 
   /* --- condizioni: "valore @ (condizione)" separati da ";" --- */
+  // per un bus turistico: vale / non si sa (dipende da permessi, destinazione, meteo) / non vale
+  const GROUP_YES = ['bus', 'coach', 'tourist_bus', 'motor_vehicle', 'vehicle'];
+  const GROUP_MAYBE = ['permit', 'permit_holder', 'destination', 'private', 'customers', 'psv', 'hgv', 'goods', 'wet', 'snow', 'flooding', 'winter', 'summer', 'ice', 'fog'];
+  const GROUP_NO = ['delivery', 'disabled', 'emergency', 'residents', 'resident', 'taxi', 'agricultural', 'forestry', 'bicycle', 'moped', 'motorcycle', 'motorcar',
+    'shuttle_service', 'designated', 'fuel=electric', 'electric', 'hov', 'carpool', 'school', 'military', 'police', 'ambulance', 'fire', 'service', 'official', 'municipality', 'occupants>1'];
+  const GROUP_IT = {
+    bus: 'autobus', coach: 'bus turistici', tourist_bus: 'bus turistici', motor_vehicle: 'veicoli a motore', vehicle: 'veicoli', permit: 'con permesso', permit_holder: 'con permesso',
+    destination: 'diretti lì', private: 'autorizzati', customers: 'clienti', psv: 'mezzi pubblici', hgv: 'mezzi pesanti', goods: 'trasporto merci', wet: 'con fondo bagnato',
+    snow: 'con neve', flooding: 'in caso di allagamento', winter: 'in inverno', summer: 'in estate', ice: 'con ghiaccio', fog: 'con nebbia', delivery: 'carico e scarico',
+    disabled: 'disabili', emergency: 'soccorso', residents: 'residenti', resident: 'residenti', taxi: 'taxi', agricultural: 'mezzi agricoli', forestry: 'mezzi forestali',
+    'fuel=electric': 'veicoli elettrici', electric: 'veicoli elettrici', shuttle_service: 'navette', school: 'scuolabus', military: 'mezzi militari', police: 'polizia',
+  };
+  function parseGroups(c) {
+    const words = c.split(/\s*(?:;|,|\bOR\b)\s*/i).map((w) => w.trim().toLowerCase()).filter(Boolean);
+    if (!words.length || !words.every((w) => GROUP_YES.includes(w) || GROUP_MAYBE.includes(w) || GROUP_NO.includes(w))) return null;
+    return { type: 'gruppo', groups: words, text: c };
+  }
+  function groupCond(c) {
+    if (c.groups.some((g) => GROUP_YES.includes(g))) return true;
+    if (c.groups.some((g) => GROUP_MAYBE.includes(g))) return '?';
+    return false;
+  }
+
   const VEH_PROP = { weight: 'peso', maxweight: 'peso', length: 'lunghezza', height: 'altezza', width: 'larghezza', axleload: 'caricoAsse', axles: 'assi' };
   function parseCond(c) {
     c = unwrap(c);
@@ -2118,6 +2149,8 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
       if ((m[4] || '').toLowerCase() === 'kg') n /= 1000;
       return { type: 'veicolo', prop: VEH_PROP[m[1].toLowerCase()], op: m[2], n, text: c };
     }
+    const g = parseGroups(c);
+    if (g) return g;
     const oh = parseOH(c);
     return oh ? { type: 'orario', oh, text: c } : { type: 'altro', text: c };
   }
@@ -2127,7 +2160,10 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
     if (v == null || v === '') return null;
     const key = String(v);
     if (condCache.has(key)) return condCache.get(key);
-    let rules = [];
+    // coppie valore/condizione; un pezzo senza "@" continua la condizione precedente
+    // (orari con ";" scritti senza parentesi: "permit @ Jun 01-Oct 03: Mo 20:00-24:00; Tu-Sa 20:00-24:00")
+    const pairs = [];
+    let ok = true;
     for (const part of splitTop(key, ';')) {
       let depth = 0, at = -1;
       for (let i = 0; i < part.length; i++) {
@@ -2135,13 +2171,17 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
         else if (part[i] === ')') depth--;
         else if (part[i] === '@' && depth === 0) { at = i; break; }
       }
-      if (at < 0) { rules = null; break; }
+      if (at < 0) {
+        if (!pairs.length) { ok = false; break; }
+        pairs[pairs.length - 1].cond += '; ' + unwrap(part);
+        continue;
+      }
       const value = part.slice(0, at).trim();
       const cond = unwrap(part.slice(at + 1));
-      if (!value || !cond) { rules = null; break; }
-      rules.push({ value, conds: cond.split(/\s+AND\s+/i).map(parseCond), text: cond });
+      if (!value || !cond) { ok = false; break; }
+      pairs.push({ value, cond });
     }
-    if (rules && !rules.length) rules = null;
+    const rules = ok && pairs.length ? pairs.map((p) => ({ value: p.value, conds: p.cond.split(/\s+AND\s+/i).map(parseCond), text: p.cond })) : null;
     if (condCache.size > 2000) condCache.clear();
     condCache.set(key, rules);
     return rules;
@@ -2174,7 +2214,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
       let val = null, unk = false;
       for (const r of rules) {
         let st = true;
-        for (const c of r.conds) st = and3(st, c.type === 'veicolo' ? vehCond(c, veh) : timeFn(c, r));
+        for (const c of r.conds) st = and3(st, c.type === 'veicolo' ? vehCond(c, veh) : isFixedCond(c) ? groupCond(c) : timeFn(c, r));
         if (st === true) { val = r.value; unk = false; } else if (st === '?') unk = true;
       }
       if (val != null) eff[k] = val;
@@ -2183,13 +2223,16 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
     return { tags: eff, unknown };
   }
 
-  /* chiavi condizionali che dipendono da orari o da condizioni non legate al mezzo */
+  /* condizione che per un bus turistico è sempre vera o sempre falsa (misure del mezzo, categorie certe) */
+  function isFixedCond(c) { return c.type === 'veicolo' || (c.type === 'gruppo' && groupCond(c) !== '?'); }
+
+  /* chiavi condizionali che dipendono da orari o da condizioni non certe (permessi, meteo) */
   function timedKeys(tags) {
     const out = [];
     for (const k of COND_KEYS) {
       const rules = tags[k + ':conditional'] != null ? parseConditional(tags[k + ':conditional']) : undefined;
       if (rules === undefined) continue;
-      if (!rules || rules.some((r) => r.conds.some((c) => c.type !== 'veicolo'))) out.push(k);
+      if (!rules || rules.some((r) => r.conds.some((c) => !isFixedCond(c)))) out.push(k);
     }
     return out;
   }
@@ -2221,6 +2264,10 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
       .replace(/\s*;\s*/g, '; ').replace(/,(?=[^\s\d])/g, ', ')
       .trim();
   }
+  function condPart(c) {
+    if (c.type === 'gruppo') return (c.groups.every((g) => /^(permit|permit_holder|destination|wet|snow|flooding|winter|summer|ice|fog)$/.test(g)) ? '' : 'per ') + c.groups.map((g) => GROUP_IT[g] || g).join(', ');
+    return condText(c.text);
+  }
   function valueText(k, v) {
     if (LIMIT_KIND[k]) {
       const n = /weight|axle/.test(k) ? parseWeight(v) : parseLength(v);
@@ -2237,7 +2284,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
       const raw = tags[k + ':conditional'];
       const rules = parseConditional(raw);
       if (!rules) { parts.push(`${SUBJECT_IT[k]}: ${raw}`); continue; }
-      parts.push(`${SUBJECT_IT[k]}: ` + rules.map((r) => `${valueText(k, r.value)} ${condText(r.text)}`).join('; '));
+      parts.push(`${SUBJECT_IT[k]}: ` + rules.map((r) => `${valueText(k, r.value)} ${r.conds.map(condPart).join(' e ')}`).join('; '));
     }
     return parts.join(' · ');
   }
@@ -2283,7 +2330,9 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
     }
     const unparsable = keys.some((k) => !parseConditional(tags[k + ':conditional']));
     if (!worst && !unparsable) return { fixed, timed: null };
-    const hasTime = keys.some((k) => (parseConditional(tags[k + ':conditional']) || []).some((r) => r.conds.some((c) => c.type === 'orario')));
+    // anche una condizione non leggibile, se contiene ore o giorni, è "a orario"
+    const timeLike = (c) => c.type === 'orario' || (c.type === 'altro' && /\d:\d|\b(Mo|Tu|We|Th|Fr|Sa|Su|PH|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b/i.test(c.text));
+    const hasTime = keys.some((k) => { const rr = parseConditional(tags[k + ':conditional']); return rr ? rr.some((r) => r.conds.some(timeLike)) : /\d:\d/.test(tags[k + ':conditional']); });
     let base = worst, title;
     if (worst) title = worst.title + (hasTime ? ' in certi orari' : ' con condizioni');
     else {

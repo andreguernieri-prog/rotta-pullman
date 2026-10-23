@@ -541,3 +541,36 @@ test('ordine: i divieti a orario non in vigore vanno in fondo', () => {
   ].sort(C.hazardOrder);
   assert.deepEqual(list.map((x) => x.severity), ['red', 'amber', 'info']);
 });
+
+test('condizioni reali italiane: periodi con «:», anni, minuscole, categorie di utenti', () => {
+  const estate = C.parseConditional('no @ (Jun 22-Sep 12: Mo-Su 00:00-04:00, 16:00-24:00); permit @ (Jun 22-Sep 12: Mo-Su 10:00-16:00)');
+  assert.equal(estate.length, 2);
+  assert.equal(C.ohAt(estate[0].conds[0].oh, at(2027, 7, 10, 17)), true);
+  assert.equal(C.ohAt(estate[0].conds[0].oh, at(2027, 10, 10, 17)), false);
+  // condizione con ";" senza parentesi
+  const zona = C.parseConditional('permit @ Jun 01-Oct 03: Mo 00:00-02:00,20:00-24:00; Tu-Sa 20:00-24:00; Su 00:00-02:00,20:00-24:00');
+  assert.equal(zona.length, 1);
+  assert.equal(C.ohAt(zona[0].conds[0].oh, at(2027, 7, 8, 21)), true); // giovedì sera di luglio
+  assert.equal(C.ohAt(C.parseOH('2026 Jan 01-2026 Jun 30'), at(2026, 3, 1, 10)), true);
+  assert.equal(C.ohAt(C.parseOH('2026 Jan 01-2026 Jun 30'), at(2027, 3, 1, 10)), false);
+  assert.equal(C.ohAt(C.parseOH('nov-apr'), at(2027, 1, 10, 10)), true);
+  assert.equal(C.ohAt(C.parseOH('su, ph 08:00-12:30 14:30-19:00'), at(2027, 1, 10, 15)), true); // domenica
+  // eccezioni per categorie: i disabili sì, il bus no; con permesso: non si sa
+  const t = { motor_vehicle: 'no', 'motor_vehicle:conditional': 'yes @ (disabled; emergency; delivery)' };
+  assert.equal(C.effectiveTags(t, veh, () => false).tags.motor_vehicle, 'no');
+  const p = C.effectiveTags({ motor_vehicle: 'no', 'motor_vehicle:conditional': 'yes @ (permit)' }, veh, (c) => (c.type === 'orario' ? false : '?'));
+  assert.equal(p.unknown, true);
+  assert.equal(C.effectiveTags({ 'motor_vehicle:conditional': 'no @ (bus)' }, veh, () => false).tags.motor_vehicle, 'no');
+  const z = C.conditionalIssues({ 'motor_vehicle:conditional': 'permit @ (Mo-Sa 11:00-15:30)' }, veh).timed;
+  assert.equal(z.title, 'Transito riservato in certi orari');
+  assert.equal(z.when, 'veicoli a motore: solo con permesso lun–sab 11:00–15:30');
+  assert.equal(C.conditionalIssues({ motor_vehicle: 'no', 'motor_vehicle:conditional': 'yes @ (permit_holder)' }, veh).timed.when, 'veicoli a motore: consentito con permesso');
+});
+
+test('categorie certe: divieto fisso con le eccezioni nel dettaglio', () => {
+  const r = C.conditionalIssues({ motor_vehicle: 'no', 'motor_vehicle:conditional': 'yes @ (disabled; emergency; delivery)' }, veh);
+  assert.equal(r.timed, null);
+  assert.equal(r.fixed[0].severity, 'red');
+  assert.match(r.fixed[0].detail, /consentito per disabili, soccorso, carico e scarico/);
+  assert.equal(C.conditionalIssues({ motor_vehicle: 'no', 'motor_vehicle:conditional': 'yes @ (bus)' }, veh).fixed.length, 0);
+});
