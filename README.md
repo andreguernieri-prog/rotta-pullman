@@ -10,7 +10,7 @@ Funziona nel browser, su telefono e computer, senza registrazione e senza server
 - **Controllo dei punti critici.** Dopo il calcolo, l'app interroga OpenStreetMap lungo tutto il percorso: limiti di altezza, larghezza, lunghezza, massa, carico per asse e divieti per bus o mezzi pesanti. Ogni punto è mostrato sulla mappa con il suo cartello e classificato come *non transitabile* o *da verificare*, con link a Street View.
 - **Programma con pause di legge** (Reg. CE 561/2006): 45′ entro 4 h 30 di guida, oppure frazionata 15′ + 30′, oppure doppio autista. Le pause vengono collocate nelle aree di servizio raggiungibili sulla propria carreggiata. Le soste nelle tappe (es. visita di 1 h) contano come pausa. Avvisi oltre 9/10 h di guida e oltre 13 h di impegno.
 - **Permessi e ZTL.** Per ogni tappa l'app riconosce il comune e dice se i bus turistici hanno bisogno di un permesso, di un ticket o di una prenotazione, oppure se l'accesso è vietato. Indica i passaggi per ottenerlo, i costi indicativi, i contatti e i link alle pagine ufficiali. Le città in elenco sono Roma, Firenze, Venezia, Milano, Napoli, Verona, Siena, Pisa, Bologna, Torino, Lucca, Perugia, Bergamo e i comuni della Costiera Amalfitana. Per gli altri comuni l'app avvisa che non ha dati e propone la ricerca delle regole.
-- **Parcheggi bus** segnati su OpenStreetMap entro 1,5 km da ogni tappa.
+- **Parcheggi bus** segnati su OpenStreetMap entro 1 km dal punto di arrivo.
 - **Indicazioni svolta per svolta**, **GPX** per i navigatori per mezzi pesanti (OsmAnd, Sygic Truck, Garmin…), **link condivisibile** che riapre lo stesso viaggio con lo stesso mezzo, **foglio di viaggio** stampabile.
 
 ## Aggiornare le regole dei permessi

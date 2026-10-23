@@ -923,14 +923,22 @@
     runAnalysis(seq, workCtrl ? workCtrl.signal : undefined, only);
   }
 
+  /* Parcheggi per bus solo intorno al punto di arrivo, entro PARK_RADIUS metri */
+  const PARK_RADIUS = 1000;
+  const parkCache = new Map();
+
   async function runParkings(my, signal) {
     const r = state.route;
-    const pts = r.stops.map((s, i) => ({ lat: s.lat, lon: s.lon, i })).slice(1);
+    const last = r.stops.length - 1;
+    const dest = r.stops[last];
+    const pts = [{ lat: dest.lat, lon: dest.lon, i: last }];
+    const cacheKey = dest.lat.toFixed(5) + ',' + dest.lon.toFixed(5);
     try {
-      let els;
-      for (let attempt = 0; ; attempt++) {
+      let els = parkCache.get(cacheKey);
+      for (let attempt = 0; !els; attempt++) {
         try {
-          els = await API.parkings(pts, 1500, signal);
+          els = await API.parkings(pts, PARK_RADIUS, signal);
+          parkCache.set(cacheKey, els);
           break;
         } catch (e) {
           if (e.code === 'aborted' || attempt >= 1) throw e;
@@ -958,7 +966,7 @@
           const d = C.haversine([p.lat, p.lon], [c.lat, c.lon]);
           if (!best || d < best.d) best = { k, d };
         });
-        if (!best || best.d > 1600) continue;
+        if (!best || best.d > PARK_RADIUS) continue;
         const t = el.tags || {};
         const busTag = /^(yes|designated)$/.test(t.bus || '') || /^(yes|designated)$/.test(t.coach || '') || /^(yes|designated)$/.test(t.tourist_bus || '') || /^(bus|coach)/.test(t.parking || '');
         groups[best.k].items.push({ id: key, lat: c.lat, lon: c.lon, d: best.d, tags: t, bus: busTag });
@@ -1367,8 +1375,8 @@
     let any = false;
     for (const g of p.groups) {
       const s = r.stops[g.stop];
-      ul.append(h('li', { class: 'pk-group', text: `${C.stopLetter(g.stop)} · ${s.label || 'Tappa'}` }));
-      if (!g.items.length) { ul.append(h('li', { class: 'none' }, 'Nessun parcheggio per bus segnato su OpenStreetMap entro 1,5 km.')); continue; }
+      ul.append(h('li', { class: 'pk-group', text: `Arrivo · ${s.label || 'destinazione'}` }));
+      if (!g.items.length) { ul.append(h('li', { class: 'none' }, 'Nessun parcheggio per bus segnato su OpenStreetMap entro 1 km dall\'arrivo.')); continue; }
       any = true;
       for (const it of g.items) {
         ul.append(h('li', { class: 'pk' },

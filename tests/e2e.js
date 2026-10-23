@@ -34,7 +34,7 @@ function serve() {
 
 /* ---------------- servizi simulati ---------------- */
 const VIA_A1 = [[45.4860, 9.2044], [45.40, 9.33], [45.31, 9.50], [45.05, 9.70], [44.80, 10.33], [44.65, 10.93], [44.50, 11.34], [44.25, 11.30], [43.95, 11.20], [43.7629, 11.2650]];
-const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0 };
+const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [] };
 
 function densify(pts, step) {
   const out = [];
@@ -102,11 +102,14 @@ function wayOn(coords, frac, count, id, tags) {
 
 function mockOverpass(data) {
   if (/amenity=parking/.test(data)) {
-    const pts = [...data.matchAll(/around:1500,([\d.-]+),([\d.-]+)\)\[amenity=parking\]\[~/g)].map((m) => [Number(m[1]), Number(m[2])]);
+    const found = [...data.matchAll(/around:(\d+),([\d.-]+),([\d.-]+)\)\[amenity=parking\]\[~/g)];
+    mocks.parkingQueries.push(found.map((m) => ({ radius: Number(m[1]), lat: Number(m[2]), lon: Number(m[3]) })));
+    const pts = found.map((m) => [Number(m[2]), Number(m[3])]);
     const elements = [];
     pts.forEach((p, k) => {
       elements.push({ type: 'way', id: 9000 + k, center: { lat: p[0] + 0.002, lon: p[1] + 0.002 }, tags: { amenity: 'parking', bus: 'designated', name: 'Parcheggio bus turistici', fee: 'yes', 'capacity:bus': '18' } });
       elements.push({ type: 'node', id: 9100 + k, lat: p[0] - 0.008, lon: p[1] + 0.001, tags: { amenity: 'parking', hgv: 'yes' } });
+      elements.push({ type: 'node', id: 9200 + k, lat: p[0] + 0.012, lon: p[1], tags: { amenity: 'parking', bus: 'yes', name: 'Parcheggio troppo lontano' } });
     });
     return { elements };
   }
@@ -311,6 +314,14 @@ async function setupRoutes(context) {
     assert.match(await bo.textContent(), /Accesso limitato/);
     assert.match(await bo.textContent(), /Tappa B/);
     assert.equal(await p.locator('.pin').count(), 3);
+    // parcheggi: una sola ricerca, intorno all'arrivo, entro 1 km
+    await p.waitForFunction(() => /Arrivo · /.test(document.querySelector('#parkings').textContent), null, { timeout: 15000 });
+    const lastQ = mocks.parkingQueries[mocks.parkingQueries.length - 1];
+    assert.equal(lastQ.length, 1);
+    assert.equal(lastQ[0].radius, 1000);
+    assert.ok(Math.abs(lastQ[0].lat - 43.7629) < 0.01, 'cerca intorno all\'arrivo');
+    assert.doesNotMatch(await p.textContent('#parkings'), /troppo lontano|Bologna/);
+    assert.equal(await p.locator('#parkings .pk').count(), 2);
   });
 
   await step('esportazione GPX', async () => {
