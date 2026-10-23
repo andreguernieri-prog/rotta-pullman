@@ -269,3 +269,14 @@ test('permessi: archivio completo e coerente', () => {
     }
   }
 });
+
+test('consigli per i punti critici', () => {
+  const pes = C.hazardAdvice({ kind: 'pesanti', severity: 'amber' });
+  assert.match(pes, /camion/);
+  assert.match(pes, /autobus/);
+  assert.match(C.hazardAdvice({ kind: 'altezza', severity: 'red', value: 3.5 }), /non passa/);
+  assert.match(C.hazardAdvice({ kind: 'altezza', severity: 'amber', value: 3.9 }), /poco margine/);
+  assert.match(C.hazardAdvice({ kind: 'altezza', severity: 'amber', value: null }), /senza la misura/);
+  assert.match(C.hazardAdvice({ kind: 'altezza', severity: 'amber', value: 3.6, crossing: true }), /ponte/);
+  for (const kind of ['larghezza', 'lunghezza', 'peso', 'asse', 'bus', 'altro']) assert.ok(C.hazardAdvice({ kind, severity: 'red' }).length > 20, kind);
+});

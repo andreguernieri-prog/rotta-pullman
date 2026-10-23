@@ -300,6 +300,29 @@ async function setupRoutes(context) {
     await p.screenshot({ path: path.join(OUT, '2b-telefono-permessi.png') });
   });
 
+  await step('punti critici: dal riquadro alla mappa, con scheda dettagliata', async () => {
+    await p.evaluate(() => { document.querySelector('#panel-body').scrollTop = 0; });
+    const pts = p.locator('#check-banner .check-pt');
+    assert.equal(await pts.count(), 3);
+    assert.match(await pts.nth(2).textContent(), /Divieto per mezzi pesanti.*km \d+ · verso le \d\d:\d\d/s);
+    await pts.nth(2).click();
+    await p.waitForSelector('.hz-popup .hzpop', { timeout: 5000 });
+    const card = await p.textContent('.hz-popup .hzpop');
+    assert.match(card, /Divieto per mezzi pesanti/);
+    assert.match(card, /Via dei Colli/);
+    assert.match(card, /Ci arrivi/);
+    assert.match(card, /Cosa fare: .*camion.*autobus/s);
+    await p.waitForFunction(() => /Viale Galileo/.test(document.querySelector('.hz-popup .hzpop').textContent), null, { timeout: 5000 });
+    assert.equal(await p.locator('.hz-marker.focus').count(), 1);
+    // la scheda resta nell'area visibile della mappa, sopra il pannello
+    const box = await p.locator('.hz-popup').boundingBox();
+    const panelTop = await p.evaluate(() => document.querySelector('#panel').getBoundingClientRect().top);
+    assert.ok(box.y >= 0 && box.y + box.height <= panelTop + 1, `scheda ${Math.round(box.y)}–${Math.round(box.y + box.height)}, pannello da ${Math.round(panelTop)}`);
+    await p.screenshot({ path: path.join(OUT, '2c-telefono-scheda-punto.png') });
+    await p.evaluate(() => window.__rp.map.closePopup());
+    await p.click('#grip');
+  });
+
   await step('elenco punti critici con cartelli', async () => {
     await p.evaluate(() => { const s = document.querySelector('#hazards').closest('.res-sec'); document.querySelector('#panel-body').scrollTop = s.offsetTop - 10; });
     await p.waitForTimeout(200);
@@ -429,7 +452,7 @@ async function setupRoutes(context) {
       await q.screenshot({ path: path.join(OUT, '9-tratto-mancante.png') });
       assert.equal(await q.locator('#hazards .hz').count(), 3); // gli altri tratti hanno comunque dato i risultati
       mocks.failCorridor = new Set();
-      await q.click('#check-banner button');
+      await q.click('#check-banner button:has-text("Verifica i tratti mancanti")');
       await q.waitForFunction(() => window.__rp.state.analysis.status === 'done');
       assert.doesNotMatch(await q.textContent('#check-banner'), /mancanti/);
       assert.equal(await q.locator('.leaflet-tile-container img[src*="tile.openstreetmap.org"]').count() > 0, true);

@@ -468,6 +468,31 @@
     return out;
   }
 
+  /* Cosa fare davanti a un punto critico, in parole semplici */
+  function hazardAdvice(hz) {
+    if (hz.crossing) return 'Il limite è scritto sul ponte che passa sopra il percorso: di solito riguarda chi passa sotto, non chi passa sopra. Guarda il cartello con Street View prima di partire.';
+    const evita = 'Per evitarlo, tocca la mappa prima di questo punto e aggiungi una tappa su un\'altra strada: il percorso verrà ricalcolato.';
+    switch (hz.kind) {
+      case 'altezza':
+        if (hz.severity === 'red') return 'Il mezzo non passa sotto questo punto. ' + evita + ' Se pensi che il dato della mappa sia sbagliato, verifica con Street View.';
+        if (hz.value == null) return 'È segnalato un passaggio basso, ma senza la misura: controlla l\'altezza sul cartello con Street View.';
+        return 'Il mezzo passa, ma con poco margine. Tieni conto di carico sul tetto, neve e dossi; nel dubbio scegli un\'altra strada. ' + evita;
+      case 'larghezza':
+        if (hz.severity === 'red') return 'Il mezzo è più largo del passaggio. ' + evita;
+        return 'Il passaggio è stretto per il mezzo, soprattutto con traffico nell\'altro senso. Controlla con Street View e valuta un\'altra strada.';
+      case 'lunghezza':
+      case 'peso':
+      case 'asse':
+        return 'Il cartello vieta il transito al tuo mezzo. ' + evita + ' Se pensi che il dato sia sbagliato, verifica con Street View.';
+      case 'bus':
+        return 'Divieto di transito per gli autobus. ' + evita;
+      case 'pesanti':
+        return 'Su OpenStreetMap questo divieto si usa di solito per il cartello con il camion, che vale per i veicoli che trasportano merci e non per gli autobus. Se sul cartello c\'è solo il camion, il bus può passare; se c\'è un limite di peso o il simbolo dell\'autobus, no. Controlla il cartello con Street View.';
+      default:
+        return 'Controlla il punto con Street View prima di partire.';
+    }
+  }
+
   function hasRestrictionTags(tags) {
     if (!tags) return false;
     return ['maxheight', 'maxheight:physical', 'maxwidth', 'maxwidth:physical', 'maxlength', 'maxweight', 'maxweightrating', 'maxaxleload']
@@ -945,7 +970,7 @@
     PRESETS, LIMITS, RULES, sanitizeVehicle,
     haversine, bearing, decodePolyline, encodePolyline, simplify, RouteIndex,
     buildCumTime, splitByDistance, normalizeValhalla, normalizeOrs, finishRoute, timeAtAlong, alongAtTime,
-    parseLength, parseWeight, evaluateTags, hasRestrictionTags, wayRelation, analyzeElements,
+    parseLength, parseWeight, evaluateTags, hazardAdvice, hasRestrictionTags, wayRelation, analyzeElements,
     planTrip, fmtDur, fmtDist, fmtClock, fmtNum, stopLetter, parseCoords,
     buildGpx, encodeShare, decodeShare, normName, matchPermit, groupPermits,
     tileKey, tilesAround, tilesForCoords, pointInRings, coordsCovered, tileToElements,

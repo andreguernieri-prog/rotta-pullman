@@ -1052,12 +1052,83 @@
     lg.hazards.clearLayers();
     const a = state.analysis;
     if (!a || !a.hazards) return;
+    hazardMarkers.clear();
     for (const hz of a.hazards) {
-      const icon = L.divIcon({ className: '', html: `<div class="hz-marker ${hz.severity}">${hazardSign(hz)}</div>`, iconSize: [30, 30], iconAnchor: [15, 15], popupAnchor: [0, -14] });
-      L.marker([hz.lat, hz.lon], { icon, zIndexOffset: hz.severity === 'red' ? 600 : 500, title: hz.title })
-        .bindPopup(() => popupBox(hz.title, [hz.detail, hz.name, 'km ' + C.fmtNum(hz.alongStart / 1000, 0)].filter(Boolean).join(' · ')))
+      const icon = L.divIcon({ className: '', html: `<div class="hz-marker ${hz.severity}">${hazardSign(hz)}</div>`, iconSize: [30, 30], iconAnchor: [15, 15] });
+      const mk = L.marker([hz.lat, hz.lon], { icon, zIndexOffset: hz.severity === 'red' ? 600 : 500, title: hz.title })
+        .on('click', () => openHazardPopup(hz))
         .addTo(lg.hazards);
+      hazardMarkers.set(hz.ids[0], mk);
     }
+  }
+
+  /* ---------- scheda di un punto critico ---------- */
+  const hazardMarkers = new Map();
+  const placeNames = new Map();
+
+  /* orario stimato di passaggio in un punto del percorso, secondo il programma */
+  function clockAtAlong(along) {
+    const r = state.route, p = state.plan;
+    if (!r || !p) return null;
+    const T = C.timeAtAlong(r, along);
+    let ev = p.events[0];
+    for (const e of p.events) { if (e.T <= T) ev = e; else break; }
+    return ev.depart + (T - ev.T) * 1000;
+  }
+
+  function hazardKm(hz) {
+    const km = hz.alongStart / 1000;
+    return `km ${C.fmtNum(km, km < 10 ? 1 : 0)}`;
+  }
+
+  function hazardWhereShort(hz) {
+    const eta = clockAtAlong(hz.alongStart);
+    return [hz.name || 'strada senza nome', hazardKm(hz), eta ? 'verso le ' + C.fmtClock(eta, depMs()) : ''].filter(Boolean).join(' · ');
+  }
+
+  function streetViewUrl(hz) {
+    return `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${hz.lat.toFixed(6)},${hz.lon.toFixed(6)}`;
+  }
+
+  function hazardCard(hz) {
+    const span = hz.alongEnd - hz.alongStart;
+    const eta = clockAtAlong(hz.alongStart);
+    const osm = hz.ids[0].split('/');
+    const near = h('dd', { text: placeNames.get(hz.ids[0]) || 'ricerca…' });
+    if (!placeNames.has(hz.ids[0])) {
+      API.reverse(hz.lat, hz.lon)
+        .then((label) => { placeNames.set(hz.ids[0], label || 'non disponibile'); near.textContent = label || 'non disponibile'; })
+        .catch(() => { near.textContent = 'non disponibile'; });
+    }
+    const rows = [['Strada', hz.name || 'senza nome'], ['Posizione', hazardKm(hz) + ' dalla partenza'], ['Vicino a', near]];
+    if (eta) rows.push(['Ci arrivi', 'verso le ' + C.fmtClock(eta, depMs())]);
+    if (span > 150) rows.push(['Tratto', C.fmtDist(span)]);
+    return h('div', { class: 'hzpop' },
+      h('div', { class: 'hzpop-head' },
+        h('span', { svg: hazardSign(hz) }),
+        h('span', null, h('b', { text: hz.title }), h('span', { class: `sev sev-${hz.severity}-bg`, text: hz.severity === 'red' ? 'Non transitabile' : 'Da verificare' }))),
+      h('p', { text: hz.detail }),
+      h('dl', null, rows.flatMap(([k, v]) => [h('dt', { text: k }), v.nodeType ? v : h('dd', { text: v })])),
+      h('p', { class: 'hzpop-advice' }, h('b', { text: 'Cosa fare: ' }), C.hazardAdvice(hz)),
+      h('div', { class: 'hz-links' },
+        h('a', { href: streetViewUrl(hz), target: '_blank', rel: 'noopener' }, 'Street View'),
+        h('a', { href: `https://www.openstreetmap.org/${osm[0]}/${osm[1]}`, target: '_blank', rel: 'noopener' }, 'Dati OSM')));
+  }
+
+  function openHazardPopup(hz) {
+    for (const mk of hazardMarkers.values()) { const el = mk.getElement(); if (el && el.firstChild) el.firstChild.classList.remove('focus'); }
+    const mk = hazardMarkers.get(hz.ids[0]);
+    const el = mk && mk.getElement();
+    if (el && el.firstChild) el.firstChild.classList.add('focus');
+    const pad = mapPadding();
+    L.popup({ maxWidth: 300, minWidth: 230, className: 'hz-popup', offset: [0, -12], autoPanPaddingTopLeft: pad.paddingTopLeft, autoPanPaddingBottomRight: pad.paddingBottomRight })
+      .setLatLng([hz.lat, hz.lon]).setContent(hazardCard(hz)).openOn(map);
+  }
+
+  /* porta la mappa sul punto e apre la scheda */
+  function focusHazard(hz) {
+    flyTo(hz.lat, hz.lon, 17);
+    setTimeout(() => openHazardPopup(hz), isWide() ? 350 : 700);
   }
 
   function drawBreaks() {
@@ -1169,12 +1240,27 @@
     return { text, old: ageDays > 21 ? `I dati scaricati hanno ${Math.floor(ageDays)} giorni: l'aggiornamento settimanale potrebbe essersi fermato.` : null };
   }
 
+  function checkPoints(a) {
+    const ul = h('ul', { class: 'check-pts' });
+    for (const hz of a.hazards.slice(0, 3)) {
+      ul.append(h('li', null, h('button', { type: 'button', class: 'check-pt', onclick: () => focusHazard(hz) },
+        h('span', { class: 'check-pt-sign', svg: hazardSign(hz) }),
+        h('span', { class: 'check-pt-text' }, h('b', { text: hz.title }), h('span', { text: hazardWhereShort(hz) })),
+        h('span', { class: 'check-pt-go', text: 'Mappa ›' }))));
+    }
+    if (a.hazards.length > 3) {
+      ul.append(h('li', null, h('button', { type: 'button', class: 'btn-ghost', onclick: () => $('#hazards').closest('.res-sec').scrollIntoView({ behavior: 'smooth', block: 'start' }) },
+        `Vedi tutti i ${a.hazards.length} punti`)));
+    }
+    return ul;
+  }
+
   function renderCheck() {
     const box = $('#check-banner');
     const a = state.analysis;
     box.className = 'osm-check';
     box.replaceChildren();
-    const body = h('p');
+    const body = h('div', { class: 'osm-body' });
     const c = hazardCounts();
     if (!a || a.status === 'loading') {
       box.classList.add('loading');
@@ -1191,11 +1277,13 @@
       if (c.red) {
         box.classList.add('red');
         body.append(h('b', { text: `${plural(c.red, 'punto non transitabile', 'punti non transitabili')} per questo mezzo` }),
-          'Secondo OpenStreetMap ci sono limiti incompatibili sul percorso. Controlla l\'elenco qui sotto e sposta o aggiungi tappe per evitarli.');
+          'Secondo OpenStreetMap ci sono limiti incompatibili sul percorso. Tocca un punto per vederlo sulla mappa e sapere cosa fare.');
+        body.append(checkPoints(a));
       } else if (c.amber) {
         box.classList.add('amber');
         body.append(h('b', { text: plural(c.amber, 'punto da verificare', 'punti da verificare') }),
-          'Nessun limite incompatibile, ma ci sono passaggi con margini stretti o divieti da controllare sul cartello.');
+          'Nessun limite incompatibile, ma ci sono passaggi con margini stretti o divieti da controllare sul cartello. Tocca un punto per vederlo sulla mappa.');
+        body.append(checkPoints(a));
       } else if (a.status === 'done') {
         box.classList.add('ok');
         body.append(h('b', { text: 'Nessun limite incompatibile trovato' }),
@@ -1391,7 +1479,8 @@
     for (const hz of a.hazards) {
       const km = hz.alongStart / 1000;
       const span = hz.alongEnd - hz.alongStart;
-      const meta = [hz.name, `km ${C.fmtNum(km, km < 10 ? 1 : 0)}`, span > 150 ? `tratto di ${C.fmtDist(span)}` : ''].filter(Boolean).join(' · ');
+      const eta = clockAtAlong(hz.alongStart);
+      const meta = [hz.name, `km ${C.fmtNum(km, km < 10 ? 1 : 0)}`, eta ? 'verso le ' + C.fmtClock(eta, depMs()) : '', span > 150 ? `tratto di ${C.fmtDist(span)}` : ''].filter(Boolean).join(' · ');
       const osm = hz.ids[0].split('/');
       ul.append(h('li', { class: 'hz' },
         h('span', { svg: hazardSign(hz) }),
@@ -1399,9 +1488,10 @@
           h('span', { class: 'hz-title' }, hz.title, h('span', { class: `sev sev-${hz.severity}-bg`, text: hz.severity === 'red' ? 'Non transitabile' : 'Da verificare' })),
           h('span', { text: hz.detail }),
           h('span', { class: 'hz-meta', text: meta }),
+          h('span', { class: 'hz-advice' }, h('b', { text: 'Cosa fare: ' }), C.hazardAdvice(hz)),
           h('span', { class: 'hz-links' },
-            h('button', { type: 'button', onclick: () => flyTo(hz.lat, hz.lon, 17) }, 'Mostra sulla mappa'),
-            h('a', { href: `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${hz.lat.toFixed(6)},${hz.lon.toFixed(6)}`, target: '_blank', rel: 'noopener' }, 'Street View'),
+            h('button', { type: 'button', onclick: () => focusHazard(hz) }, 'Mostra sulla mappa'),
+            h('a', { href: streetViewUrl(hz), target: '_blank', rel: 'noopener' }, 'Street View'),
             h('a', { href: `https://www.openstreetmap.org/${osm[0]}/${osm[1]}`, target: '_blank', rel: 'noopener' }, 'Dati OSM')))));
     }
     if (loading) ul.append(h('li', { class: 'none' }, 'Controllo degli altri tratti in corso…'));
