@@ -99,6 +99,7 @@
   }
 
   /* ------------------------------ Percorso ------------------------------ */
+  const NOROUTE_MSG = 'Nessun percorso per questo mezzo. Di solito una tappa si raggiunge solo da strade con limiti (ponte, strettoia, sottopasso) o chiuse al traffico: spostala dove il pullman si ferma davvero, per esempio un parcheggio o la strada principale.';
   function valhallaBody(stops, veh, margin, opt) {
     const body = {
       locations: stops.map((s) => ({ lat: +s.lat.toFixed(6), lon: +s.lon.toFixed(6), type: 'break' })),
@@ -147,7 +148,7 @@
     if (!r.ok || !r.data || !r.data.trip) {
       const code = r.data && r.data.error_code;
       if (code === 442 || code === 443) {
-        throw new ServiceError('Nessun percorso compatibile con le dimensioni del mezzo. Prova a spostare le tappe su strade principali o, se il mezzo è un bus, disattiva “Evita strade vietate ai mezzi pesanti”.', 'noroute');
+        throw new ServiceError(NOROUTE_MSG + (opt.strictHgv ? ' Se non basta, disattiva “Evita strade vietate ai mezzi pesanti”: molti divieti per i camion non valgono per i bus.' : ''), 'noroute');
       }
       if (code === 171 || code === 170 || code === 172) {
         throw new ServiceError('Una tappa è troppo lontana da una strada percorribile dal mezzo. Spostala più vicino a una strada principale.', 'nopoint');
@@ -197,7 +198,7 @@
       const code = err && err.code;
       if (r.status === 401 || r.status === 403) throw new ServiceError('La chiave openrouteservice non è valida o è scaduta.', 'nokey');
       if (r.status === 429) throw new ServiceError('Limite giornaliero di openrouteservice raggiunto. Usa Valhalla o riprova domani.', 'rate');
-      if (code === 2009) throw new ServiceError('Nessun percorso compatibile con le dimensioni del mezzo. Prova a spostare le tappe su strade principali.', 'noroute');
+      if (code === 2009) throw new ServiceError(NOROUTE_MSG, 'noroute');
       if (code === 2010) throw new ServiceError('Una tappa è troppo lontana da una strada percorribile dal mezzo.', 'nopoint');
       if (code === 2004) throw new ServiceError('Percorso troppo lungo per openrouteservice (massimo circa 6.000 km).', 'toolong');
       throw new ServiceError(err && err.message ? `openrouteservice: ${err.message}` : 'openrouteservice non è disponibile. Riprova tra poco.', 'route');

@@ -1063,6 +1063,9 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 .hz-quiet summary { cursor: pointer; font-weight: 600; font-size: 14px; }
 .hz-quiet details > p { margin: 4px 0 8px; }
 .none { color: var(--muted); font-size: 14px; padding: 4px 0; }
+.noroute { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.noroute-list { margin: 0; padding-left: 18px; }
+.noroute-list li { margin: 2px 0; }
 .err-detail { display: block; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 
 .pk { display: grid; grid-template-columns: 36px 1fr; gap: 12px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r); }
@@ -1297,7 +1300,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 
         <div class="cta">
           <button type="button" class="btn-primary" id="btn-route">Calcola percorso</button>
-          <p class="msg msg-error" id="route-error" role="alert" hidden></p>
+          <div class="msg msg-error" id="route-error" role="alert" hidden></div>
         </div>
       </section>
 
@@ -3060,6 +3063,48 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
   }
 
   /* ------------------------------------------------------------------ */
+  /* Percorso non trovato: strade chiuse al mezzo intorno a una tappa    */
+  /* ------------------------------------------------------------------ */
+  const NOT_FOR_BUS = /^(footway|path|cycleway|bridleway|steps|track|pedestrian|corridor|proposed|construction|platform)$/;
+
+  /*
+   * Strade con limiti incompatibili entro radiusM metri da un punto, dalla più vicina:
+   * [{ name, issues: ['altezza massima 1,9 m', ...], dist, ids }]. Vie con lo stesso nome unite.
+   */
+  function blockersNear(elements, point, veh, radiusM) {
+    const p = [point.lat, point.lon];
+    const byName = new Map();
+    for (const el of elements || []) {
+      const t = el.tags || {};
+      if (!hasRestrictionTags(t) || NOT_FOR_BUS.test(t.highway || '')) continue;
+      if (t.amenity === 'parking' || t.highway === 'services' || t.highway === 'rest_area') continue;
+      let dist;
+      if (el.geometry && el.geometry.length > 1) {
+        dist = Infinity;
+        for (let i = 1; i < el.geometry.length; i++) {
+          const a = el.geometry[i - 1], b = el.geometry[i];
+          dist = Math.min(dist, pointSegDist(p, [a.lat, a.lon], [b.lat, b.lon]));
+        }
+      } else if (el.lat != null) dist = haversine(p, [el.lat, el.lon]);
+      else continue;
+      if (dist > radiusM) continue;
+      const issues = (hasConditional(t) ? conditionalIssues(t, veh).fixed : evaluateTags(t, veh)).filter((i) => i.severity === 'red');
+      if (!issues.length) continue;
+      const name = t.name || t.ref || (t.bridge && t.bridge !== 'no' ? 'ponte senza nome' : t.tunnel && t.tunnel !== 'no' ? 'galleria senza nome' : el.type === 'node' ? 'passaggio ristretto' : 'strada senza nome');
+      const key = t.name || t.ref || el.type + el.id;
+      const cur = byName.get(key) || { name, issues: [], dist, ids: [] };
+      for (const i of issues) {
+        const txt = i.title.charAt(0).toLowerCase() + i.title.slice(1);
+        if (!cur.issues.includes(txt)) cur.issues.push(txt);
+      }
+      cur.dist = Math.min(cur.dist, dist);
+      cur.ids.push(el.type + '/' + el.id);
+      byName.set(key, cur);
+    }
+    return Array.from(byName.values()).sort((a, b) => a.dist - b.dist);
+  }
+
+  /* ------------------------------------------------------------------ */
   /* Parcheggi vicino all'arrivo                                         */
   /* ------------------------------------------------------------------ */
   const PARK_NEAR = 1000;       // parcheggi da mostrare intorno all'arrivo
@@ -3192,7 +3237,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
     planTrip, fmtDur, fmtDist, fmtClock, fmtNum, stopLetter, parseCoords,
     buildGpx, encodeShare, decodeShare, normName, matchPermit, groupPermits,
     tileKey, tilesAround, tilesForCoords, pointInRings, coordsCovered, tileToElements,
-    PARK_NEAR, PARK_FAR, ringArea, parkingKind, pickParkings,
+    PARK_NEAR, PARK_FAR, ringArea, parkingKind, pickParkings, blockersNear,
   };
 });
 
@@ -3299,6 +3344,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
   }
 
   /* ------------------------------ Percorso ------------------------------ */
+  const NOROUTE_MSG = 'Nessun percorso per questo mezzo. Di solito una tappa si raggiunge solo da strade con limiti (ponte, strettoia, sottopasso) o chiuse al traffico: spostala dove il pullman si ferma davvero, per esempio un parcheggio o la strada principale.';
   function valhallaBody(stops, veh, margin, opt) {
     const body = {
       locations: stops.map((s) => ({ lat: +s.lat.toFixed(6), lon: +s.lon.toFixed(6), type: 'break' })),
@@ -3347,7 +3393,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
     if (!r.ok || !r.data || !r.data.trip) {
       const code = r.data && r.data.error_code;
       if (code === 442 || code === 443) {
-        throw new ServiceError('Nessun percorso compatibile con le dimensioni del mezzo. Prova a spostare le tappe su strade principali o, se il mezzo è un bus, disattiva “Evita strade vietate ai mezzi pesanti”.', 'noroute');
+        throw new ServiceError(NOROUTE_MSG + (opt.strictHgv ? ' Se non basta, disattiva “Evita strade vietate ai mezzi pesanti”: molti divieti per i camion non valgono per i bus.' : ''), 'noroute');
       }
       if (code === 171 || code === 170 || code === 172) {
         throw new ServiceError('Una tappa è troppo lontana da una strada percorribile dal mezzo. Spostala più vicino a una strada principale.', 'nopoint');
@@ -3397,7 +3443,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
       const code = err && err.code;
       if (r.status === 401 || r.status === 403) throw new ServiceError('La chiave openrouteservice non è valida o è scaduta.', 'nokey');
       if (r.status === 429) throw new ServiceError('Limite giornaliero di openrouteservice raggiunto. Usa Valhalla o riprova domani.', 'rate');
-      if (code === 2009) throw new ServiceError('Nessun percorso compatibile con le dimensioni del mezzo. Prova a spostare le tappe su strade principali.', 'noroute');
+      if (code === 2009) throw new ServiceError(NOROUTE_MSG, 'noroute');
       if (code === 2010) throw new ServiceError('Una tappa è troppo lontana da una strada percorribile dal mezzo.', 'nopoint');
       if (code === 2004) throw new ServiceError('Percorso troppo lungo per openrouteservice (massimo circa 6.000 km).', 'toolong');
       throw new ServiceError(err && err.message ? `openrouteservice: ${err.message}` : 'openrouteservice non è disponibile. Riprova tra poco.', 'route');
@@ -4881,11 +4927,47 @@ out body geom;`;
     else b.textContent = state.route ? 'Ricalcola percorso' : 'Calcola percorso';
   }
 
-  function showError(msg) {
+  /* msg: testo, oppure contenuto già pronto con un testo breve per l'avviso */
+  function showError(msg, short) {
     const p = $('#route-error');
-    p.textContent = msg;
+    if (typeof msg === 'string') p.textContent = msg; else p.replaceChildren(msg);
     p.hidden = false;
-    if ($('#view-viaggio').hidden) toast(msg, 7000);
+    if ($('#view-viaggio').hidden) toast(short || (typeof msg === 'string' ? msg : 'Percorso non trovato: guarda la scheda Viaggio.'), 7000);
+  }
+
+  /*
+   * Percorso non trovato: nei dati dei limiti cerca, intorno a ogni tappa, le strade chiuse al mezzo.
+   * Di solito il problema è una tappa raggiungibile solo da lì (es. un'attrazione in fondo a una strada stretta).
+   */
+  const BLOCK_RADIUS = 300;
+  async function explainNoRoute(stops, err, my) {
+    showError(err.message);
+    let dati = null;
+    try { dati = await API.dataIndex(); } catch (e) { dati = null; }
+    if (my !== seq || !dati) return;
+    const found = [];
+    for (let i = stops.length - 1; i >= 0; i--) { // dall'arrivo: di solito il problema è l'ultimo tratto
+      const s = stops[i];
+      if (!C.pointInRings(s.lat, s.lon, dati.copertura)) continue;
+      try {
+        const tiles = await API.dataTiles(dati, C.tilesAround(s.lat, s.lon, BLOCK_RADIUS + 100, dati.riquadro));
+        const b = C.blockersNear(tiles.flatMap(C.tileToElements), s, state.vehicle, BLOCK_RADIUS);
+        if (b.length) found.push({ i, s, b: b.slice(0, 4) });
+      } catch (e) { /* dati non disponibili: resta il messaggio generale */ }
+      if (my !== seq) return;
+    }
+    if (!found.length) return;
+    const role = (i) => (i === stops.length - 1 ? 'all\'arrivo' : i === 0 ? 'alla partenza' : `alla tappa ${C.stopLetter(i)}`);
+    const box = h('div', { class: 'noroute' },
+      h('b', { text: 'Nessun percorso per questo mezzo.' }));
+    for (const f of found.slice(0, 2)) {
+      box.append(
+        h('span', { text: `Vicino ${role(f.i)} (${f.s.label || 'punto sulla mappa'}) ci sono strade chiuse al mezzo:` }),
+        h('ul', { class: 'noroute-list' }, f.b.map((x) => h('li', null, h('b', { text: x.name }), `: ${x.issues.join(', ')} · a ${C.fmtDist(Math.max(10, Math.round(x.dist / 10) * 10))}`))),
+        h('button', { type: 'button', class: 'btn-ghost', onclick: () => flyTo(f.s.lat, f.s.lon, 17) }, 'Mostra sulla mappa'));
+    }
+    box.append(h('span', { text: 'Probabilmente la tappa si raggiunge solo da lì. Spostala dove il pullman può fermarsi davvero, per esempio un parcheggio o il punto di discesa sulla strada principale: tocca la mappa o trascina il segnaposto.' }));
+    showError(box, 'Percorso non trovato: una tappa si raggiunge solo da strade chiuse al mezzo. Dettagli nella scheda Viaggio.');
   }
 
   async function computeRoute() {
@@ -4944,7 +5026,8 @@ out body geom;`;
       runTomTom(my, signal);
     } catch (e) {
       if (my !== seq || e.code === 'aborted') return;
-      showError(e.message || 'Errore inatteso durante il calcolo.');
+      if (e.code === 'noroute') explainNoRoute(valid, e, my);
+      else showError(e.message || 'Errore inatteso durante il calcolo.');
     } finally {
       if (my === seq) setBusy(false);
     }

@@ -35,7 +35,7 @@ function serve() {
 
 /* ---------------- servizi simulati ---------------- */
 const VIA_A1 = [[45.4860, 9.2044], [45.40, 9.33], [45.31, 9.50], [45.05, 9.70], [44.80, 10.33], [44.65, 10.93], [44.50, 11.34], [44.25, 11.30], [43.95, 11.20], [43.7629, 11.2650]];
-const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null, tomtomUrls: [], vicino: false, orario: false, dateTimes: [], parkNoBus: false };
+const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null, tomtomUrls: [], vicino: false, orario: false, dateTimes: [], parkNoBus: false, blockDest: false };
 
 function densify(pts, step) {
   const out = [];
@@ -191,10 +191,15 @@ function toFeature(el) {
   return { type: 'Feature', geometry: geom, properties: props };
 }
 function mockDati() {
+  if (!mocks.lastCoords) mocks.lastCoords = densify(VIA_A1, 2000); // nessun percorso calcolato ancora
   const c = mocks.lastCoords;
-  if (!c) return null;
   const dest = c[c.length - 1];
-  const els = mockOverpass('corridoio').elements.concat([
+  const block = mocks.blockDest ? [
+    // strada stretta a ~30 m dall'arrivo, come la via dell'Orrido di Ponte Alto
+    { type: 'way', id: 9500, tags: { highway: 'unclassified', name: 'Via alla Cascata', maxheight: '1.9', maxwidth: '2.3' }, geometry: [{ lat: dest[0] + 0.0003, lon: dest[1] - 0.001 }, { lat: dest[0] + 0.0003, lon: dest[1] + 0.001 }] },
+    { type: 'way', id: 9501, tags: { highway: 'residential', name: 'Via Lontana', maxheight: '2' }, geometry: [{ lat: dest[0] + 0.01, lon: dest[1] }, { lat: dest[0] + 0.011, lon: dest[1] }] },
+  ] : [];
+  const els = mockOverpass('corridoio').elements.concat(block, [
     { type: 'way', id: 9300, center: { lat: dest[0] + 0.002, lon: dest[1] + 0.002 }, tags: { amenity: 'parking', bus: 'designated', name: 'Parcheggio bus turistici', fee: 'yes' } },
     { type: 'node', id: 9301, lat: dest[0] - 0.008, lon: dest[1] + 0.001, tags: { amenity: 'parking', hgv: 'yes' } },
     { type: 'node', id: 9302, lat: dest[0] + 0.012, lon: dest[1], tags: { amenity: 'parking', bus: 'yes', name: 'Parcheggio troppo lontano' } },
@@ -425,7 +430,7 @@ async function setupRoutes(context) {
     await p.click('#tab-viaggio');
     await p.click('#btn-route');
     await p.waitForSelector('#route-error:not([hidden])');
-    assert.match(await p.textContent('#route-error'), /Nessun percorso compatibile/);
+    assert.match(await p.textContent('#route-error'), /Nessun percorso per questo mezzo.*spostala dove il pullman si ferma/s);
     mocks.forceRouteError = false;
     await p.screenshot({ path: path.join(OUT, '5-telefono-viaggio.png') });
   });
@@ -728,6 +733,32 @@ async function setupRoutes(context) {
     });
     mocks.parkNoBus = false;
     await pctx.close();
+  }
+
+  /* --- percorso non trovato: l'app dice quale tappa e quali strade la bloccano --- */
+  {
+    const nctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, locale: 'it-IT', timezoneId: 'Europe/Rome' });
+    await setupRoutes(nctx);
+    mocks.dati = true;
+    mocks.blockDest = true;
+    mocks.forceRouteError = true;
+    mocks.lastCoords = null;
+    const q = await nctx.newPage();
+    watch(q, 'nessun percorso');
+    await q.goto(base);
+    await step('percorso non trovato: indica le strade chiuse al mezzo vicino all\'arrivo', async () => {
+      await q.waitForSelector('#route-error .noroute-list', { timeout: 20000 });
+      const txt = await q.textContent('#route-error');
+      assert.match(txt, /Vicino all'arrivo \(.*\) ci sono strade chiuse al mezzo/);
+      assert.match(txt, /Via alla Cascata: altezza massima 1,9 m, larghezza massima 2,3 m · a \d+ m/);
+      assert.doesNotMatch(txt, /Via Lontana/);
+      await q.locator('#route-error').scrollIntoViewIfNeeded();
+      await q.screenshot({ path: path.join(OUT, '15-percorso-non-trovato.png') });
+    });
+    mocks.forceRouteError = false;
+    mocks.blockDest = false;
+    mocks.dati = false;
+    await nctx.close();
   }
 
   /* --- tema scuro --- */

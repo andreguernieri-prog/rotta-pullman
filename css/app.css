@@ -385,6 +385,9 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 .hz-quiet summary { cursor: pointer; font-weight: 600; font-size: 14px; }
 .hz-quiet details > p { margin: 4px 0 8px; }
 .none { color: var(--muted); font-size: 14px; padding: 4px 0; }
+.noroute { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.noroute-list { margin: 0; padding-left: 18px; }
+.noroute-list li { margin: 2px 0; }
 .err-detail { display: block; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 
 .pk { display: grid; grid-template-columns: 36px 1fr; gap: 12px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r); }

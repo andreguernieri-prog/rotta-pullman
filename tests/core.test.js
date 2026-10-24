@@ -623,3 +623,22 @@ test('parcheggi: per bus entro 1 km, il più vicino oltre se non c\'è, generici
   assert.deepEqual(r2.near.map((x) => x.id), ['node/7']);
   assert.equal(r2.far.length, 0);
 });
+
+test('percorso non trovato: strade chiuse al mezzo intorno alla tappa (caso Orrido di Ponte Alto)', () => {
+  // dati reali di OpenStreetMap intorno all'orrido, a Trento
+  const els = [
+    { type: 'way', id: 32928698, tags: { highway: 'unclassified', name: 'Ponte Alto', bridge: 'yes', maxweight: '3.5' }, geometry: [{ lat: 46.07386, lon: 11.15122 }, { lat: 46.07372, lon: 11.15160 }] },
+    { type: 'way', id: 38967940, tags: { highway: 'unclassified', name: 'Via alla Cascata', maxheight: '1.9', maxwidth: '2.3' }, geometry: [{ lat: 46.07358, lon: 11.15187 }, { lat: 46.07340, lon: 11.15230 }] },
+    { type: 'way', id: 1120615349, tags: { highway: 'unclassified', name: 'Via alla Cascata', maxheight: '1.9', maxwidth: '2.3', maxweight: '3.5 t' }, geometry: [{ lat: 46.07355, lon: 11.15195 }, { lat: 46.07330, lon: 11.15260 }] },
+    { type: 'way', id: 1, tags: { highway: 'footway', maxwidth: '1' }, geometry: [{ lat: 46.0737, lon: 11.1514 }, { lat: 46.0738, lon: 11.1516 }] },
+    { type: 'way', id: 2, tags: { highway: 'primary', maxheight: '4.2' }, geometry: [{ lat: 46.0737, lon: 11.1514 }, { lat: 46.0738, lon: 11.1516 }] },
+    { type: 'way', id: 3, tags: { highway: 'residential', name: 'Via Lontana', maxheight: '2' }, geometry: [{ lat: 46.0800, lon: 11.1515 }, { lat: 46.0801, lon: 11.1516 }] },
+  ];
+  const b = C.blockersNear(els, { lat: 46.0737, lon: 11.1515 }, veh, 300);
+  assert.deepEqual(b.map((x) => x.name).sort(), ['Ponte Alto', 'Via alla Cascata']);
+  const via = b.find((x) => x.name === 'Via alla Cascata');
+  assert.deepEqual(via.issues, ['altezza massima 1,9 m', 'larghezza massima 2,3 m', 'massa massima 3,5 t']);
+  assert.equal(via.ids.length, 2);
+  assert.ok(via.dist < 60);
+  assert.ok(b[0].dist <= b[1].dist, 'dalla più vicina');
+});

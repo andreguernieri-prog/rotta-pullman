@@ -1641,6 +1641,48 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* Percorso non trovato: strade chiuse al mezzo intorno a una tappa    */
+  /* ------------------------------------------------------------------ */
+  const NOT_FOR_BUS = /^(footway|path|cycleway|bridleway|steps|track|pedestrian|corridor|proposed|construction|platform)$/;
+
+  /*
+   * Strade con limiti incompatibili entro radiusM metri da un punto, dalla più vicina:
+   * [{ name, issues: ['altezza massima 1,9 m', ...], dist, ids }]. Vie con lo stesso nome unite.
+   */
+  function blockersNear(elements, point, veh, radiusM) {
+    const p = [point.lat, point.lon];
+    const byName = new Map();
+    for (const el of elements || []) {
+      const t = el.tags || {};
+      if (!hasRestrictionTags(t) || NOT_FOR_BUS.test(t.highway || '')) continue;
+      if (t.amenity === 'parking' || t.highway === 'services' || t.highway === 'rest_area') continue;
+      let dist;
+      if (el.geometry && el.geometry.length > 1) {
+        dist = Infinity;
+        for (let i = 1; i < el.geometry.length; i++) {
+          const a = el.geometry[i - 1], b = el.geometry[i];
+          dist = Math.min(dist, pointSegDist(p, [a.lat, a.lon], [b.lat, b.lon]));
+        }
+      } else if (el.lat != null) dist = haversine(p, [el.lat, el.lon]);
+      else continue;
+      if (dist > radiusM) continue;
+      const issues = (hasConditional(t) ? conditionalIssues(t, veh).fixed : evaluateTags(t, veh)).filter((i) => i.severity === 'red');
+      if (!issues.length) continue;
+      const name = t.name || t.ref || (t.bridge && t.bridge !== 'no' ? 'ponte senza nome' : t.tunnel && t.tunnel !== 'no' ? 'galleria senza nome' : el.type === 'node' ? 'passaggio ristretto' : 'strada senza nome');
+      const key = t.name || t.ref || el.type + el.id;
+      const cur = byName.get(key) || { name, issues: [], dist, ids: [] };
+      for (const i of issues) {
+        const txt = i.title.charAt(0).toLowerCase() + i.title.slice(1);
+        if (!cur.issues.includes(txt)) cur.issues.push(txt);
+      }
+      cur.dist = Math.min(cur.dist, dist);
+      cur.ids.push(el.type + '/' + el.id);
+      byName.set(key, cur);
+    }
+    return Array.from(byName.values()).sort((a, b) => a.dist - b.dist);
+  }
+
+  /* ------------------------------------------------------------------ */
   /* Parcheggi vicino all'arrivo                                         */
   /* ------------------------------------------------------------------ */
   const PARK_NEAR = 1000;       // parcheggi da mostrare intorno all'arrivo
@@ -1773,6 +1815,6 @@
     planTrip, fmtDur, fmtDist, fmtClock, fmtNum, stopLetter, parseCoords,
     buildGpx, encodeShare, decodeShare, normName, matchPermit, groupPermits,
     tileKey, tilesAround, tilesForCoords, pointInRings, coordsCovered, tileToElements,
-    PARK_NEAR, PARK_FAR, ringArea, parkingKind, pickParkings,
+    PARK_NEAR, PARK_FAR, ringArea, parkingKind, pickParkings, blockersNear,
   };
 });

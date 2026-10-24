@@ -835,11 +835,47 @@
     else b.textContent = state.route ? 'Ricalcola percorso' : 'Calcola percorso';
   }
 
-  function showError(msg) {
+  /* msg: testo, oppure contenuto già pronto con un testo breve per l'avviso */
+  function showError(msg, short) {
     const p = $('#route-error');
-    p.textContent = msg;
+    if (typeof msg === 'string') p.textContent = msg; else p.replaceChildren(msg);
     p.hidden = false;
-    if ($('#view-viaggio').hidden) toast(msg, 7000);
+    if ($('#view-viaggio').hidden) toast(short || (typeof msg === 'string' ? msg : 'Percorso non trovato: guarda la scheda Viaggio.'), 7000);
+  }
+
+  /*
+   * Percorso non trovato: nei dati dei limiti cerca, intorno a ogni tappa, le strade chiuse al mezzo.
+   * Di solito il problema è una tappa raggiungibile solo da lì (es. un'attrazione in fondo a una strada stretta).
+   */
+  const BLOCK_RADIUS = 300;
+  async function explainNoRoute(stops, err, my) {
+    showError(err.message);
+    let dati = null;
+    try { dati = await API.dataIndex(); } catch (e) { dati = null; }
+    if (my !== seq || !dati) return;
+    const found = [];
+    for (let i = stops.length - 1; i >= 0; i--) { // dall'arrivo: di solito il problema è l'ultimo tratto
+      const s = stops[i];
+      if (!C.pointInRings(s.lat, s.lon, dati.copertura)) continue;
+      try {
+        const tiles = await API.dataTiles(dati, C.tilesAround(s.lat, s.lon, BLOCK_RADIUS + 100, dati.riquadro));
+        const b = C.blockersNear(tiles.flatMap(C.tileToElements), s, state.vehicle, BLOCK_RADIUS);
+        if (b.length) found.push({ i, s, b: b.slice(0, 4) });
+      } catch (e) { /* dati non disponibili: resta il messaggio generale */ }
+      if (my !== seq) return;
+    }
+    if (!found.length) return;
+    const role = (i) => (i === stops.length - 1 ? 'all\'arrivo' : i === 0 ? 'alla partenza' : `alla tappa ${C.stopLetter(i)}`);
+    const box = h('div', { class: 'noroute' },
+      h('b', { text: 'Nessun percorso per questo mezzo.' }));
+    for (const f of found.slice(0, 2)) {
+      box.append(
+        h('span', { text: `Vicino ${role(f.i)} (${f.s.label || 'punto sulla mappa'}) ci sono strade chiuse al mezzo:` }),
+        h('ul', { class: 'noroute-list' }, f.b.map((x) => h('li', null, h('b', { text: x.name }), `: ${x.issues.join(', ')} · a ${C.fmtDist(Math.max(10, Math.round(x.dist / 10) * 10))}`))),
+        h('button', { type: 'button', class: 'btn-ghost', onclick: () => flyTo(f.s.lat, f.s.lon, 17) }, 'Mostra sulla mappa'));
+    }
+    box.append(h('span', { text: 'Probabilmente la tappa si raggiunge solo da lì. Spostala dove il pullman può fermarsi davvero, per esempio un parcheggio o il punto di discesa sulla strada principale: tocca la mappa o trascina il segnaposto.' }));
+    showError(box, 'Percorso non trovato: una tappa si raggiunge solo da strade chiuse al mezzo. Dettagli nella scheda Viaggio.');
   }
 
   async function computeRoute() {
@@ -898,7 +934,8 @@
       runTomTom(my, signal);
     } catch (e) {
       if (my !== seq || e.code === 'aborted') return;
-      showError(e.message || 'Errore inatteso durante il calcolo.');
+      if (e.code === 'noroute') explainNoRoute(valid, e, my);
+      else showError(e.message || 'Errore inatteso durante il calcolo.');
     } finally {
       if (my === seq) setBusy(false);
     }
