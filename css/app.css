@@ -385,6 +385,14 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 .hz-quiet summary { cursor: pointer; font-weight: 600; font-size: 14px; }
 .hz-quiet details > p { margin: 4px 0 8px; }
 .none { color: var(--muted); font-size: 14px; padding: 4px 0; }
+.route-notes { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.route-notes:empty { display: none; }
+.route-note { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; padding: 10px 12px; border-radius: var(--r); background: var(--accent-soft); font-size: 14px; }
+.route-note.warn { background: var(--amber-soft); }
+.route-note.loading { background: var(--surface-2); }
+.route-note ul { margin: 0; padding-left: 18px; }
+.drop-marker { width: 28px; height: 28px; border-radius: 50%; background: #fff; color: #1d4f9c; border: 2.5px solid #1d4f9c; display: grid; place-items: center; box-shadow: 0 1px 4px rgba(0,0,0,.4); }
+.drop-marker svg { width: 17px; height: 17px; }
 .noroute { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .noroute-list { margin: 0; padding-left: 18px; }
 .noroute-list li { margin: 2px 0; }

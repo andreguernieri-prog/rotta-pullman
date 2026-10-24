@@ -35,7 +35,7 @@ function serve() {
 
 /* ---------------- servizi simulati ---------------- */
 const VIA_A1 = [[45.4860, 9.2044], [45.40, 9.33], [45.31, 9.50], [45.05, 9.70], [44.80, 10.33], [44.65, 10.93], [44.50, 11.34], [44.25, 11.30], [43.95, 11.20], [43.7629, 11.2650]];
-const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null, tomtomUrls: [], vicino: false, orario: false, dateTimes: [], parkNoBus: false, blockDest: false };
+const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null, tomtomUrls: [], vicino: false, orario: false, dateTimes: [], parkNoBus: false, blockDest: false, unreachableDest: false, honorExclude: false, fixedCoords: null, valhallaBodies: [] };
 
 function densify(pts, step) {
   const out = [];
@@ -55,9 +55,20 @@ const close = (a, b) => Math.abs(a[0] - b[0]) < 0.05 && Math.abs(a[1] - b[1]) < 
 const INSTR = ['Procedi in direzione sud.', 'Svolta a destra in Viale Brianza.', 'Prendi lo svincolo per A1 Bologna.', 'Mantieni la sinistra verso A1 Firenze.', 'Esci verso Firenze Sud.', 'Alla rotonda prendi la seconda uscita.'];
 
 function mockValhalla(url) {
-  if (mocks.forceRouteError) return { status: 400, body: { error_code: 442, error: 'No path could be found for input', status_code: 400 } };
+  const NOPATH = { status: 400, body: { error_code: 442, error: 'No path could be found for input', status_code: 400 } };
+  if (mocks.forceRouteError) return NOPATH;
   const body = JSON.parse(new URL(url).searchParams.get('json'));
+  mocks.valhallaBodies.push(body);
   mocks.dateTimes.push(body.date_time || null);
+  const excl = body.exclude_locations && body.exclude_locations.length;
+  // punti da evitare: senza un'alternativa simulata il servizio non trova percorsi
+  if (excl && !mocks.honorExclude) return NOPATH;
+  if (mocks.unreachableDest) {
+    // l'arrivo è raggiungibile solo cercando la strada percorribile più vicina (raggio di ricerca)
+    const lastLoc = body.locations[body.locations.length - 1];
+    if (!lastLoc.radius) return NOPATH;
+    lastLoc.lat -= 0.0012; lastLoc.lon -= 0.0008;
+  }
   const locs = body.locations.map((l) => [l.lat, l.lon]);
   const legs = [];
   let all = [], totLen = 0, totTime = 0;
@@ -67,6 +78,8 @@ function mockValhalla(url) {
     if (close(a, VIA_A1[0]) && close(b, VIA_A1[VIA_A1.length - 1])) base = VIA_A1;
     else if (close(b, VIA_A1[0]) && close(a, VIA_A1[VIA_A1.length - 1])) base = VIA_A1.slice().reverse();
     else if (close(a, VIA_A1[0]) && close(b, [44.4949, 11.3426])) base = VIA_A1.slice(0, 7);
+    // alternativa che evita i punti esclusi: la parte centrale passa più a est
+    if (excl && mocks.honorExclude && base.length > 2) base = base.map((p, k) => (k === 0 || k === base.length - 1 ? p : [p[0], p[1] + 0.08]));
     else if (close(a, [44.4949, 11.3426]) && close(b, VIA_A1[VIA_A1.length - 1])) base = VIA_A1.slice(6);
     base = base.slice(); base[0] = a; base[base.length - 1] = b;
     const shape = densify(base, 400);
@@ -86,6 +99,7 @@ function mockValhalla(url) {
     totLen += len; totTime += time;
   }
   mocks.lastCoords = all;
+  if (mocks.honorExclude && !excl) mocks.fixedCoords = all; // i limiti restano dove sono sul percorso più veloce
   return { status: 200, body: { trip: { legs, summary: { length: totLen / 1000, time: totTime, has_toll: true, has_highway: true, has_ferry: false }, status: 0, units: 'kilometers', language: 'it-IT' } } };
 }
 
@@ -125,7 +139,7 @@ function mockOverpass(data) {
     });
     return { elements };
   }
-  const c = mocks.lastCoords;
+  const c = mocks.fixedCoords || mocks.lastCoords;
   const sv = (frac, m, id, name) => Object.assign({ type: 'way', id, tags: { highway: 'services', name } }, { center: offsetPoint(c, frac, m) });
   return {
     elements: [
@@ -759,6 +773,65 @@ async function setupRoutes(context) {
     mocks.blockDest = false;
     mocks.dati = false;
     await nctx.close();
+  }
+
+  /* --- arrivo irraggiungibile: il percorso arriva da solo alla strada più vicina --- */
+  {
+    const uctx = await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: 'it-IT', timezoneId: 'Europe/Rome' });
+    await setupRoutes(uctx);
+    Object.assign(mocks, { dati: true, blockDest: true, unreachableDest: true, lastCoords: null, valhallaBodies: [] });
+    const q = await uctx.newPage();
+    watch(q, 'arrivo irraggiungibile');
+    await q.goto(base);
+    await step('arrivo irraggiungibile: il percorso arriva da solo alla strada più vicina', async () => {
+      await q.waitForFunction(() => /Arrivo spostato/.test(document.querySelector('#route-notes').textContent), null, { timeout: 30000 });
+      const txt = await q.textContent('#route-notes');
+      assert.match(txt, /Arrivo spostato: «Firenze, Piazzale Michelangelo» non si raggiunge in pullman/);
+      assert.match(txt, /Strade chiuse al mezzo: Via alla Cascata \(altezza massima 1,9 m, larghezza massima 2,3 m\)/);
+      assert.match(txt, /Il pullman arriva alla strada raggiungibile più vicina.*circa \d+ m a piedi \(\d+ min\) fino alla meta/);
+      const last = (b) => b.locations[b.locations.length - 1];
+      assert.ok(mocks.valhallaBodies.some((b) => last(b).radius === 200), 'ricalcolo con raggio di ricerca sull\'arrivo');
+      assert.ok(!mocks.valhallaBodies.some((b) => b.locations[0].radius), 'la partenza non si sposta');
+      assert.equal(await q.locator('.drop-marker').count(), 1);
+      assert.equal(await q.isHidden('#route-error'), true);
+      await q.locator('#route-notes button', { hasText: 'Mostra sulla mappa' }).first().click();
+      await q.waitForTimeout(800);
+      await q.screenshot({ path: path.join(OUT, '16-arrivo-spostato.png') });
+    });
+    Object.assign(mocks, { dati: false, blockDest: false, unreachableDest: false });
+    await uctx.close();
+  }
+
+  /* --- punto non transitabile sul percorso: alternativa automatica --- */
+  {
+    const actx = await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: 'it-IT', timezoneId: 'Europe/Rome' });
+    await setupRoutes(actx);
+    Object.assign(mocks, { honorExclude: true, fixedCoords: null, lastCoords: null, valhallaBodies: [] });
+    const q = await actx.newPage();
+    watch(q, 'alternativa');
+    await q.goto(base);
+    await step('punto non transitabile: alternativa automatica, confronto e scelta dell\'operatore', async () => {
+      await q.waitForFunction(() => /Percorso alternativo/.test(document.querySelector('#route-notes').textContent), null, { timeout: 40000 });
+      await q.waitForFunction(() => window.__rp.state.analysis && window.__rp.state.analysis.status === 'done', null, { timeout: 30000 });
+      const notes = await q.textContent('#route-notes');
+      assert.match(notes, /Percorso alternativo: evita un punto non transitabile/);
+      assert.match(notes, /Altezza massima 3,5 m · Sottopasso ferroviario/);
+      assert.match(notes, /Rispetto al più veloce: \+[\d,.]+ (km|m) di strada, \+.+ di guida/);
+      const ex = mocks.valhallaBodies.filter((b) => b.exclude_locations);
+      assert.equal(ex.length, 1);
+      assert.equal(ex[0].exclude_locations.length, 1);
+      assert.doesNotMatch(await q.textContent('#check-banner'), /non transitabil/);
+      await q.screenshot({ path: path.join(OUT, '17-alternativa.png') });
+      // il più veloce, su richiesta
+      await q.click('#route-notes button:has-text("Mostra il percorso più veloce")');
+      await q.waitForFunction(() => /Questo è il percorso più veloce/.test(document.querySelector('#route-notes').textContent), null, { timeout: 30000 });
+      assert.match(await q.textContent('#check-banner'), /^1 punto non transitabile/);
+      // l'operatore sceglie di evitare un punto dalla lista
+      await q.locator('#hazards > .hz', { hasText: 'Altezza massima 3,5 m' }).locator('button', { hasText: 'Evita questo punto' }).click();
+      await q.waitForFunction(() => /Percorso che evita il punto scelto/.test(document.querySelector('#route-notes').textContent), null, { timeout: 30000 });
+    });
+    Object.assign(mocks, { honorExclude: false, fixedCoords: null });
+    await actx.close();
   }
 
   /* --- tema scuro --- */

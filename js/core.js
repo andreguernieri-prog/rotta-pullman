@@ -1683,6 +1683,44 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* Alternative: punti da evitare, tratto a piedi                       */
+  /* ------------------------------------------------------------------ */
+  const AVOID_NEAR_STOP = 150; // un punto critico attaccato a una tappa non si evita cambiando strada
+
+  /*
+   * Punti non transitabili da far evitare al calcolo: rossi, sicuramente sul percorso, lontani dalle tappe.
+   * Per ciascuno un punto sulla strada percorsa, a metà del tratto limitato.
+   */
+  function avoidPoints(hazards, route, stops) {
+    const out = [];
+    for (const hz of hazards || []) {
+      if (hz.severity !== 'red' || hz.rel === 'vicino' || hz.kind === 'tomtom' || hz.decisione === 'no') continue;
+      const p = route.index.pointAt((hz.alongStart + hz.alongEnd) / 2);
+      if ((stops || []).some((s) => haversine([s.lat, s.lon], p) < AVOID_NEAR_STOP)) continue;
+      out.push({ lat: p[0], lon: p[1], title: hz.title, name: hz.name || '', ids: hz.ids.slice() });
+    }
+    return out;
+  }
+
+  /* unisce le liste di punti da evitare senza doppioni (entro 30 m); added: quanti sono nuovi */
+  function mergeAvoid(prev, add) {
+    const out = (prev || []).slice();
+    let added = 0;
+    for (const p of add || []) {
+      if (out.some((q) => haversine([q.lat, q.lon], [p.lat, p.lon]) < 30 || (q.ids && p.ids && q.ids.some((i) => p.ids.includes(i))))) continue;
+      out.push(p);
+      added++;
+    }
+    return { list: out, added };
+  }
+
+  /* tratto a piedi stimato: in linea d'aria più un quarto, a 4,5 km/h */
+  function walkEstimate(a, b) {
+    const m = Math.max(10, Math.round((haversine([a.lat, a.lon], [b.lat, b.lon]) * 1.25) / 10) * 10);
+    return { m, min: Math.max(1, Math.round(m / 75)) };
+  }
+
+  /* ------------------------------------------------------------------ */
   /* Parcheggi vicino all'arrivo                                         */
   /* ------------------------------------------------------------------ */
   const PARK_NEAR = 1000;       // parcheggi da mostrare intorno all'arrivo
@@ -1815,6 +1853,6 @@
     planTrip, fmtDur, fmtDist, fmtClock, fmtNum, stopLetter, parseCoords,
     buildGpx, encodeShare, decodeShare, normName, matchPermit, groupPermits,
     tileKey, tilesAround, tilesForCoords, pointInRings, coordsCovered, tileToElements,
-    PARK_NEAR, PARK_FAR, ringArea, parkingKind, pickParkings, blockersNear,
+    PARK_NEAR, PARK_FAR, ringArea, parkingKind, pickParkings, blockersNear, avoidPoints, mergeAvoid, walkEstimate,
   };
 });

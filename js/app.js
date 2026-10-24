@@ -65,7 +65,7 @@
     presetId: saved.presetId || 'p:gt13',
     margin: saved.margin != null ? Number(saved.margin) : 0.1,
     breakMode: saved.breakMode || 'legge',
-    options: Object.assign({ engine: 'valhalla', orsKey: '', tomtomKey: '', mapillaryToken: '', avoidTolls: false, avoidHighways: false, avoidFerries: true, strictHgv: true, vmax: 100 }, saved.options || {}),
+    options: Object.assign({ engine: 'valhalla', orsKey: '', tomtomKey: '', mapillaryToken: '', avoidTolls: false, avoidHighways: false, avoidFerries: true, strictHgv: true, autoAvoid: true, vmax: 100 }, saved.options || {}),
     stops: (saved.stops && saved.stops.length >= 2 ? saved.stops : EXAMPLE).map(mkStop),
     isExample: saved.stops ? !!saved.example : true,
     departure: validDeparture(saved.departure),
@@ -784,6 +784,7 @@
     $('#in-departure').value = state.departure;
     $('#in-breaks').value = state.breakMode;
     $('#opt-hgv').checked = o.strictHgv;
+    $('#opt-avoid').checked = o.autoAvoid !== false;
     $('#opt-tolls').checked = o.avoidTolls;
     $('#opt-highways').checked = o.avoidHighways;
     $('#opt-ferries').checked = o.avoidFerries;
@@ -805,6 +806,7 @@
     if (key === 'engine') $('#ors-key-field').hidden = state.options.engine !== 'ors';
   });
   optBind('#opt-hgv', 'strictHgv', (t) => t.checked);
+  optBind('#opt-avoid', 'autoAvoid', (t) => t.checked);
   optBind('#opt-tolls', 'avoidTolls', (t) => t.checked);
   optBind('#opt-highways', 'avoidHighways', (t) => t.checked);
   optBind('#opt-ferries', 'avoidFerries', (t) => t.checked);
@@ -850,21 +852,8 @@
   const BLOCK_RADIUS = 300;
   async function explainNoRoute(stops, err, my) {
     showError(err.message);
-    let dati = null;
-    try { dati = await API.dataIndex(); } catch (e) { dati = null; }
-    if (my !== seq || !dati) return;
-    const found = [];
-    for (let i = stops.length - 1; i >= 0; i--) { // dall'arrivo: di solito il problema è l'ultimo tratto
-      const s = stops[i];
-      if (!C.pointInRings(s.lat, s.lon, dati.copertura)) continue;
-      try {
-        const tiles = await API.dataTiles(dati, C.tilesAround(s.lat, s.lon, BLOCK_RADIUS + 100, dati.riquadro));
-        const b = C.blockersNear(tiles.flatMap(C.tileToElements), s, state.vehicle, BLOCK_RADIUS);
-        if (b.length) found.push({ i, s, b: b.slice(0, 4) });
-      } catch (e) { /* dati non disponibili: resta il messaggio generale */ }
-      if (my !== seq) return;
-    }
-    if (!found.length) return;
+    const found = await blockedStops(stops, my);
+    if (my !== seq || !found.length) return;
     const role = (i) => (i === stops.length - 1 ? 'all\'arrivo' : i === 0 ? 'alla partenza' : `alla tappa ${C.stopLetter(i)}`);
     const box = h('div', { class: 'noroute' },
       h('b', { text: 'Nessun percorso per questo mezzo.' }));
@@ -874,11 +863,26 @@
         h('ul', { class: 'noroute-list' }, f.b.map((x) => h('li', null, h('b', { text: x.name }), `: ${x.issues.join(', ')} · a ${C.fmtDist(Math.max(10, Math.round(x.dist / 10) * 10))}`))),
         h('button', { type: 'button', class: 'btn-ghost', onclick: () => flyTo(f.s.lat, f.s.lon, 17) }, 'Mostra sulla mappa'));
     }
-    box.append(h('span', { text: 'Probabilmente la tappa si raggiunge solo da lì. Spostala dove il pullman può fermarsi davvero, per esempio un parcheggio o il punto di discesa sulla strada principale: tocca la mappa o trascina il segnaposto.' }));
+    box.append(h('span', { text: 'Ho cercato anche la strada raggiungibile più vicina e i parcheggi intorno, senza risultato. Sposta la tappa dove il pullman può fermarsi davvero, per esempio un parcheggio o il punto di discesa sulla strada principale: tocca la mappa o trascina il segnaposto.' }));
     showError(box, 'Percorso non trovato: una tappa si raggiunge solo da strade chiuse al mezzo. Dettagli nella scheda Viaggio.');
   }
 
-  async function computeRoute() {
+  function routeWith(stops, veh, margin, opt, signal) {
+    return opt.engine === 'ors'
+      ? API.routeOrs(stops, veh, margin, opt, opt.orsKey, signal)
+      : API.routeValhalla(stops, veh, margin, opt, signal);
+  }
+
+  /*
+   * Calcola il percorso. plan (facoltativo) serve ai ricalcoli automatici:
+   *   avoid    punti da evitare          round    giro di ricerca dell'alternativa
+   *   fastest  km e guida del più veloce  noAvoid  mostra il più veloce, senza alternative
+   *   moved    tappe spostate dove arriva il pullman
+   *   pre      percorso già calcolato da applicare ({ r, moved })
+   *   manual   punti da evitare scelti dall'operatore
+   */
+  async function computeRoute(plan) {
+    if (!plan || typeof plan !== 'object' || plan instanceof Event) plan = {};
     clearTimeout(autoTimer);
     closeAc();
     $('#route-error').hidden = true;
@@ -902,15 +906,36 @@
     if (workCtrl) workCtrl.abort();
     workCtrl = new AbortController();
     const signal = workCtrl.signal;
+    state.avoiding = false;
     setBusy(true);
+    const avoiding = !!(plan.avoid && plan.avoid.length);
     try {
       const veh = Object.assign({}, state.vehicle);
-      const opt = Object.assign({}, state.options, { departure: state.departure });
-      const r = opt.engine === 'ors'
-        ? await API.routeOrs(valid, veh, state.margin, opt, opt.orsKey, signal)
-        : await API.routeValhalla(valid, veh, state.margin, opt, signal);
+      const opt = Object.assign({}, state.options, { departure: state.departure, avoid: plan.avoid || [] });
+      let r, moved = plan.moved || [];
+      if (plan.pre) { r = plan.pre.r; moved = plan.pre.moved || []; }
+      else {
+        // tappe già spostate dove arriva il pullman
+        const routeStops = valid.map((s, i) => { const m = moved.find((x) => x.i === i); return m ? Object.assign({}, s, m.to) : s; });
+        try {
+          r = await routeWith(routeStops, veh, state.margin, opt, signal);
+        } catch (e) {
+          if ((e.code !== 'noroute' && e.code !== 'nopoint') || avoiding || moved.length) throw e;
+          if (my !== seq) return;
+          // una tappa non si raggiunge: si cerca il punto più vicino dove arriva il pullman
+          toast('Una tappa non si raggiunge con questo mezzo: cerco il punto più vicino dove arriva il pullman…', 6000);
+          const rec = await recoverRoute(valid, veh, opt, signal, my);
+          if (my !== seq) return;
+          if (!rec) throw e;
+          hideToast();
+          r = rec.r; moved = rec.moved;
+        }
+      }
       if (my !== seq) return;
       r.stops = valid.map((s) => ({ id: s.id, label: s.label, lat: s.lat, lon: s.lon }));
+      for (const m of moved) r.stops[m.i].bus = { lat: m.to.lat, lon: m.to.lon };
+      r.moved = moved;
+      r.plan = { avoid: opt.avoid, round: plan.round || 0, fastest: plan.fastest || null, noAvoid: !!plan.noAvoid, manual: !!plan.manual };
       r.stopIdx = valid.map((s) => state.stops.indexOf(s));
       r.vehicle = veh;
       r.margin = state.margin;
@@ -934,12 +959,153 @@
       runTomTom(my, signal);
     } catch (e) {
       if (my !== seq || e.code === 'aborted') return;
-      if (e.code === 'noroute') explainNoRoute(valid, e, my);
+      if (avoiding && (e.code === 'noroute' || e.code === 'nopoint')) showError('Non c\'è un percorso per questo mezzo che eviti quel punto: resta il percorso di prima.');
+      else if (e.code === 'noroute' || e.code === 'nopoint') explainNoRoute(valid, e, my);
       else showError(e.message || 'Errore inatteso durante il calcolo.');
     } finally {
       if (my === seq) setBusy(false);
     }
   }
+
+  /* ---------- tappa irraggiungibile: punto più vicino dove arriva il pullman ---------- */
+  const RECOVER_RADIUS = 200; // metri: il raggio che i server Valhalla pubblici accettano di solito
+
+  /* tappe circondate da strade chiuse al mezzo (dai dati dei limiti), dall'arrivo alla partenza */
+  async function blockedStops(stops, my) {
+    let dati = null;
+    try { dati = await API.dataIndex(); } catch (e) { dati = null; }
+    if (!dati || my !== seq) return [];
+    const found = [];
+    for (let i = stops.length - 1; i >= 0; i--) {
+      const s = stops[i];
+      if (!C.pointInRings(s.lat, s.lon, dati.copertura)) continue;
+      try {
+        const tiles = await API.dataTiles(dati, C.tilesAround(s.lat, s.lon, BLOCK_RADIUS + 100, dati.riquadro));
+        const b = C.blockersNear(tiles.flatMap(C.tileToElements), s, state.vehicle, BLOCK_RADIUS);
+        if (b.length) found.push({ i, s, b: b.slice(0, 4) });
+      } catch (e) { /* dati non disponibili */ }
+      if (my !== seq) return [];
+    }
+    return found;
+  }
+
+  /* parcheggi adatti vicino a una tappa, come arrivo alternativo */
+  async function parkingCandidates(s, signal) {
+    let els = null;
+    try {
+      const dati = await API.dataIndex();
+      if (dati && C.pointInRings(s.lat, s.lon, dati.copertura)) {
+        const tiles = await API.dataTiles(dati, C.tilesAround(s.lat, s.lon, 1500, dati.riquadro), signal);
+        els = tiles.flatMap(C.tileToElements).filter((e) => e.tags && e.tags.amenity === 'parking');
+      }
+    } catch (e) { if (e.code === 'aborted') throw e; }
+    if (!els) {
+      try { els = await API.parkings([s], { near: 1000, far: 1500 }, signal); } catch (e) { if (e.code === 'aborted') throw e; return []; }
+    }
+    const pk = C.pickParkings(els, s);
+    return pk.near.concat(pk.generic, pk.far.filter((x) => x.d <= 1500));
+  }
+
+  function movedStops(valid, idxs, ends, diag, park, via) {
+    const out = [];
+    for (const i of idxs) {
+      const to = ends[i];
+      if (!to) continue;
+      const from = valid[i];
+      if (!park && C.haversine([from.lat, from.lon], [to.lat, to.lon]) < 25) continue; // praticamente lo stesso punto
+      const d = diag.find((x) => x.i === i);
+      out.push({ i, label: from.label, from: { lat: from.lat, lon: from.lon }, to: { lat: to.lat, lon: to.lon }, walk: C.walkEstimate(from, to), blockers: d ? d.b : [], park: park ? { name: parkingName(park), kind: park.kind } : null, via });
+    }
+    return out;
+  }
+
+  /*
+   * Percorso non trovato: 1) Valhalla con un raggio di ricerca sulle tappe sospette arriva alla strada
+   * percorribile più vicina; con openrouteservice si ricalcola poi fino a quel punto. 2) Altrimenti si prova
+   * ad arrivare al parcheggio adatto più vicino.
+   */
+  async function recoverRoute(valid, veh, opt, signal, my) {
+    const diag = await blockedStops(valid, my);
+    if (my !== seq) return null;
+    const last = valid.length - 1;
+    const sus = diag.map((d) => d.i);
+    const tries = [sus.length ? sus : [last]];
+    if (tries[0].length < valid.length) tries.push(valid.map((_, i) => i));
+    const vopt = Object.assign({}, opt, { engine: 'valhalla', avoid: [] });
+    for (const idxs of tries) {
+      let r;
+      try {
+        r = await API.routeValhalla(valid.map((s, i) => (idxs.includes(i) ? Object.assign({}, s, { radius: RECOVER_RADIUS }) : s)), veh, state.margin, vopt, signal);
+      } catch (e) { if (e.code === 'aborted') throw e; continue; }
+      if (my !== seq) return null;
+      const ends = r.legEnds.map((k) => ({ lat: r.coords[k][0], lon: r.coords[k][1] }));
+      let via = 'valhalla';
+      if (opt.engine === 'ors') {
+        try {
+          r = await API.routeOrs(valid.map((s, i) => (idxs.includes(i) ? Object.assign({}, s, ends[i]) : s)), veh, state.margin, opt, opt.orsKey, signal);
+          via = 'ors';
+        } catch (e) { if (e.code === 'aborted') throw e; via = 'valhalla-riserva'; }
+      }
+      return { r, moved: movedStops(valid, idxs, ends, diag, null, via) };
+    }
+    const i = sus.length ? sus[0] : last;
+    for (const c of (await parkingCandidates(valid[i], signal)).slice(0, 2)) {
+      if (my !== seq) return null;
+      try {
+        const r = await routeWith(valid.map((s, k) => (k === i ? Object.assign({}, s, { lat: c.lat, lon: c.lon }) : s)), veh, state.margin, opt, signal);
+        return { r, moved: movedStops(valid, [i], { [i]: c }, diag, c, opt.engine) };
+      } catch (e) { if (e.code === 'aborted') throw e; }
+    }
+    return null;
+  }
+
+  /* ---------- alternativa automatica ai punti non transitabili ---------- */
+  const AVOID_ROUNDS = 3;
+  async function maybeAvoid(my) {
+    const r = state.route;
+    if (!r || my !== seq || !r.plan || r.plan.noAvoid || state.options.autoAvoid === false) return;
+    const pts = C.avoidPoints(allHazards(), r, r.stops.map((s) => s.bus || s));
+    if (!pts.length) return;
+    const merged = C.mergeAvoid(r.plan.avoid, pts);
+    if (!merged.added) {
+      r.plan.avoidFailed = 'Il servizio di calcolo non riesce a evitare questi punti: guarda le indicazioni dei punti critici o aggiungi una tappa su un\'altra strada.';
+      renderRouteNotes(); return;
+    }
+    if (r.plan.round >= AVOID_ROUNDS) {
+      r.plan.avoidFailed = 'Dopo tre tentativi restano punti non transitabili: aggiungi una tappa su un\'altra strada.';
+      renderRouteNotes(); return;
+    }
+    state.avoiding = true;
+    renderRouteNotes();
+    let alt = null;
+    try {
+      const opt = Object.assign({}, r.options, { avoid: merged.list });
+      alt = await routeWith(r.stops.map((s) => (s.bus ? Object.assign({}, s, s.bus) : s)), r.vehicle, r.margin, opt, workCtrl ? workCtrl.signal : undefined);
+    } catch (e) {
+      if (e.code === 'aborted') return;
+    }
+    if (my !== seq || state.route !== r) return;
+    state.avoiding = false;
+    if (!alt) {
+      r.plan.avoidFailed = r.plan.round
+        ? 'Non ho trovato un percorso che eviti anche gli altri punti non transitabili.'
+        : 'Non esiste un percorso per questo mezzo che eviti i punti non transitabili: verifica i punti con Street View o aggiungi una tappa su un\'altra strada.';
+      renderRouteNotes(); return;
+    }
+    computeRoute({ pre: { r: alt, moved: r.moved }, avoid: merged.list, round: r.plan.round + 1, fastest: r.plan.fastest || { distanceM: r.distanceM, driveS: r.driveS } });
+  }
+
+  /* "Evita questo punto" nella scheda di un punto critico */
+  function avoidHazard(hz) {
+    const r = state.route;
+    if (!r) return;
+    const p = r.index.pointAt((hz.alongStart + hz.alongEnd) / 2);
+    const merged = C.mergeAvoid(r.plan && r.plan.avoid, [{ lat: p[0], lon: p[1], title: hz.title, name: hz.name || '', ids: hz.ids.slice() }]);
+    map.closePopup();
+    toast('Ricalcolo il percorso evitando questo punto…');
+    computeRoute({ avoid: merged.list, round: (r.plan && r.plan.round) || 0, fastest: (r.plan && r.plan.fastest) || { distanceM: r.distanceM, driveS: r.driveS }, moved: r.moved, manual: true });
+  }
+
   $('#btn-route').addEventListener('click', computeRoute);
   $('#btn-recalc').addEventListener('click', computeRoute);
 
@@ -1006,6 +1172,7 @@
     if (a.status === 'error') a.reason = a.lastError;
     replan();
     renderResult();
+    if (a.status === 'done') maybeAvoid(my);
   }
 
   function retryAnalysis(only) {
@@ -1088,11 +1255,20 @@
   /* ------------------------------------------------------------------ */
   /* Disegno sulla mappa                                                 */
   /* ------------------------------------------------------------------ */
+  const WALK_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="13" cy="4" r="2.2" fill="currentColor"/><path d="M12.5 7.5 10 12l1.5 3.5L9 21 M12.5 7.5l2 4.5 3 1.2 M11.5 15.5l3 2 1 3.5 M10 12l-3 1.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   function drawRoute() {
     lg.route.clearLayers();
     const c = state.route.coords;
     L.polyline(c, { color: '#ffffff', weight: 11, opacity: 0.95, interactive: false, lineJoin: 'round' }).addTo(lg.route);
     L.polyline(c, { color: '#1d4f9c', weight: 6, opacity: 1, interactive: false, lineJoin: 'round' }).addTo(lg.route);
+    // tappe spostate: dove si ferma il pullman e il tratto a piedi fino alla meta
+    for (const s of state.route.stops) {
+      if (!s.bus) continue;
+      L.polyline([[s.bus.lat, s.bus.lon], [s.lat, s.lon]], { color: '#1d4f9c', weight: 4, opacity: 0.9, dashArray: '1 8', lineCap: 'round', interactive: false }).addTo(lg.route);
+      L.marker([s.bus.lat, s.bus.lon], { icon: L.divIcon({ className: '', html: `<div class="drop-marker">${WALK_SVG}</div>`, iconSize: [28, 28], iconAnchor: [14, 14] }), title: 'Il pullman si ferma qui, poi a piedi', zIndexOffset: 700 })
+        .bindPopup(() => popupBox('Il pullman si ferma qui', `Poi a piedi fino a ${s.label || 'la meta'}`))
+        .addTo(lg.route);
+    }
   }
 
   function popupBox(title, sub, extra) {
@@ -1258,6 +1434,7 @@
       mapillaryBlock(hz),
       h('p', { class: 'hzpop-advice' }, h('b', { text: 'Cosa fare: ' }), C.hazardAdvice(hz)),
       h('div', { class: 'hz-links' },
+        hz.severity !== 'info' ? h('button', { type: 'button', class: 'hz-avoid', onclick: () => avoidHazard(hz) }, 'Evita questo punto') : null,
         h('a', { href: streetViewUrl(hz), target: '_blank', rel: 'noopener' }, 'Street View'),
         h('a', { href: `https://www.mapillary.com/app/?lat=${hz.lat.toFixed(6)}&lng=${hz.lon.toFixed(6)}&z=18`, target: '_blank', rel: 'noopener' }, 'Foto Mapillary'),
         h('a', { href: `https://www.openstreetmap.org/note/new#map=19/${hz.lat.toFixed(6)}/${hz.lon.toFixed(6)}`, target: '_blank', rel: 'noopener' }, isOsm ? 'Segnala un errore' : 'Segnala il limite su OSM'),
@@ -1439,8 +1616,8 @@
     if (!key) { state.tomtom = null; return; }
     try {
       const [bus, car] = await Promise.all([
-        API.tomtomRoute(r.stops, r.vehicle, r.margin, r.options, key, 'bus', signal),
-        API.tomtomRoute(r.stops, r.vehicle, r.margin, r.options, key, 'car', signal),
+        API.tomtomRoute(r.stops.map((s) => s.bus || s), r.vehicle, r.margin, r.options, key, 'bus', signal),
+        API.tomtomRoute(r.stops.map((s) => s.bus || s), r.vehicle, r.margin, r.options, key, 'car', signal),
       ]);
       if (my !== seq) return;
       state.tomtom = { status: 'done', cmp: C.compareRoutes(r, bus, car) };
@@ -1465,7 +1642,57 @@
     $('#res-empty').hidden = has;
     $('#res').hidden = !has;
     if (!has) return;
-    renderSummary(); renderCheck(); renderPermits(); renderTimeline(); renderHazards(); renderParkings(); renderSteps(); renderMini();
+    renderSummary(); renderRouteNotes(); renderCheck(); renderPermits(); renderTimeline(); renderHazards(); renderParkings(); renderSteps(); renderMini();
+  }
+
+  /* avvisi sul percorso: tappe spostate dove arriva il pullman, alternativa ai punti non transitabili */
+  function stopRole(i, n) { return i === n - 1 ? 'arrivo' : i === 0 ? 'partenza' : `tappa ${C.stopLetter(i)}`; }
+  function renderRouteNotes() {
+    const box = $('#route-notes');
+    box.replaceChildren();
+    const r = state.route;
+    if (!r) return;
+    const n = r.stops.length;
+    for (const m of r.moved || []) {
+      const role = stopRole(m.i, n);
+      const walk = `circa ${C.fmtDist(m.walk.m)} a piedi (${m.walk.min} min)`;
+      const street = h('span');
+      const key = 'drop:' + m.to.lat.toFixed(5) + ',' + m.to.lon.toFixed(5);
+      // prep: 'a' (arriva a / alla) oppure 'da' (parte da / dalla)
+      const where = (prep) => (m.park ? `${prep} «${m.park.name}»${m.park.kind === 'generico' ? ', un parcheggio non segnato per bus' : ''}`
+        : (prep === 'a' ? 'alla' : 'dalla') + ' strada raggiungibile più vicina' + (placeNames.get(key) ? ` (${placeNames.get(key)})` : ''));
+      const sentence = () => (role === 'partenza' ? `Il pullman parte ${where('da')}: il gruppo lo raggiunge a piedi, ${walk}.`
+        : role === 'arrivo' ? `Il pullman arriva ${where('a')}: da lì ${walk} fino alla meta.`
+          : `Il pullman si ferma ${where('a')}: da lì ${walk} fino alla tappa.`);
+      street.textContent = sentence();
+      if (!m.park && !placeNames.has(key)) {
+        API.reverse(m.to.lat, m.to.lon).then((label) => { placeNames.set(key, label ? label.split(',').slice(0, 2).join(',') : ''); street.textContent = sentence(); }).catch(() => {});
+      }
+      box.append(h('div', { class: 'route-note warn' },
+        h('b', { text: `${role.charAt(0).toUpperCase() + role.slice(1)} spostat${role === 'tappa' || role.startsWith('tappa') || role === 'partenza' ? 'a' : 'o'}: «${m.label || 'punto sulla mappa'}» non si raggiunge in pullman` }),
+        m.blockers.length ? h('span', { text: 'Strade chiuse al mezzo: ' + m.blockers.map((b) => `${b.name} (${b.issues.join(', ')})`).join('; ') + '.' }) : null,
+        street,
+        h('span', { class: 'hz-meta', text: 'Verifica che lì il pullman possa fermarsi e far scendere il gruppo.' + (m.via === 'valhalla-riserva' ? ' openrouteservice non trova un percorso fino a quel punto: il percorso è calcolato con Valhalla.' : '') }),
+        h('button', { type: 'button', class: 'btn-ghost', onclick: () => map.fitBounds([[m.to.lat, m.to.lon], [m.from.lat, m.from.lon]], Object.assign({ maxZoom: 17 }, mapPadding())) }, 'Mostra sulla mappa')));
+    }
+    const p = r.plan || {};
+    if (p.fastest && p.avoid && p.avoid.length) {
+      const dk = r.distanceM - p.fastest.distanceM, dt = r.driveS - p.fastest.driveS;
+      const delta = (v, f) => (Math.abs(v) < 1 ? 'uguale' : (v > 0 ? '+' : '−') + f(Math.abs(v)));
+      box.append(h('div', { class: 'route-note' },
+        h('b', { text: p.manual ? `Percorso che evita ${p.avoid.length === 1 ? 'il punto scelto' : `i ${p.avoid.length} punti scelti`}` : `Percorso alternativo: evita ${p.avoid.length === 1 ? 'un punto non transitabile' : `${p.avoid.length} punti non transitabili`}` }),
+        h('ul', null, p.avoid.map((a) => h('li', { text: a.title + (a.name ? ' · ' + a.name : '') }))),
+        h('span', { text: `Rispetto al più veloce: ${delta(dk, (x) => C.fmtDist(x))} di strada, ${delta(dt, (x) => C.fmtDur(x))} di guida.` }),
+        h('button', { type: 'button', class: 'btn-ghost', onclick: () => computeRoute({ noAvoid: true }) }, 'Mostra il percorso più veloce')));
+    }
+    if (state.avoiding) box.append(h('div', { class: 'route-note loading' }, h('b', { text: 'Cerco un percorso che eviti i punti non transitabili…' })));
+    if (p.avoidFailed) box.append(h('div', { class: 'route-note warn' }, h('span', { text: p.avoidFailed })));
+    const c = hazardCounts();
+    if (p.noAvoid && c && c.red) {
+      box.append(h('div', { class: 'route-note warn' },
+        h('b', { text: 'Questo è il percorso più veloce: passa da punti non transitabili.' }),
+        h('button', { type: 'button', class: 'btn-ghost', onclick: () => computeRoute() }, 'Cerca un percorso che li eviti')));
+    }
   }
 
   function renderSummary() {
@@ -1772,6 +1999,7 @@
         h('span', { class: 'hz-advice' }, h('b', { text: 'Cosa fare: ' }), C.hazardAdvice(hz)),
         h('span', { class: 'hz-links' },
           h('button', { type: 'button', onclick: () => focusHazard(hz) }, 'Mostra sulla mappa'),
+          hz.severity !== 'info' ? h('button', { type: 'button', class: 'hz-avoid', onclick: () => avoidHazard(hz) }, 'Evita questo punto') : null,
           h('a', { href: streetViewUrl(hz), target: '_blank', rel: 'noopener' }, 'Street View'),
           isOsm ? h('a', { href: `https://www.openstreetmap.org/${osm[0]}/${osm[1]}`, target: '_blank', rel: 'noopener' }, 'Dati OSM') : null)));
   }
@@ -1911,7 +2139,13 @@
   $('#btn-gpx').addEventListener('click', () => {
     const r = state.route;
     if (!r) return;
-    const wps = r.stops.map((s, i) => ({ lat: s.lat, lon: s.lon, name: `${C.stopLetter(i)} · ${s.label}` }));
+    const wps = [];
+    r.stops.forEach((s, i) => {
+      if (s.bus) {
+        wps.push({ lat: s.bus.lat, lon: s.bus.lon, name: `${C.stopLetter(i)} · fermata pullman per ${s.label}` });
+        wps.push({ lat: s.lat, lon: s.lon, name: `${s.label} (a piedi)` });
+      } else wps.push({ lat: s.lat, lon: s.lon, name: `${C.stopLetter(i)} · ${s.label}` });
+    });
     for (const ev of state.plan.events) if (ev.type === 'pausa' && ev.lat != null) wps.push({ lat: ev.lat, lon: ev.lon, name: `Pausa ${ev.minutes}′ · ${ev.place ? ev.place.name : 'area idonea'}` });
     const a = state.analysis;
     for (const hz of allHazards()) wps.push({ lat: hz.lat, lon: hz.lon, name: `${hz.severity === 'info' ? 'Divieto a orario' : hz.rel === 'vicino' ? 'Forse (vicino)' : hz.severity === 'red' ? 'ATTENZIONE' : 'Verifica'}: ${hz.title}`, desc: hz.when ? `Vale: ${hz.when}. ${hz.detail}` : hz.detail });

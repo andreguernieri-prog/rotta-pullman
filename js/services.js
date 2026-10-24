@@ -102,7 +102,8 @@
   const NOROUTE_MSG = 'Nessun percorso per questo mezzo. Di solito una tappa si raggiunge solo da strade con limiti (ponte, strettoia, sottopasso) o chiuse al traffico: spostala dove il pullman si ferma davvero, per esempio un parcheggio o la strada principale.';
   function valhallaBody(stops, veh, margin, opt) {
     const body = {
-      locations: stops.map((s) => ({ lat: +s.lat.toFixed(6), lon: +s.lon.toFixed(6), type: 'break' })),
+      // radius: per una tappa irraggiungibile, Valhalla può arrivare alla strada percorribile più vicina entro quel raggio
+      locations: stops.map((s) => Object.assign({ lat: +s.lat.toFixed(6), lon: +s.lon.toFixed(6), type: 'break' }, s.radius ? { radius: s.radius } : {})),
       costing: 'truck',
       costing_options: {
         truck: {
@@ -132,6 +133,8 @@
     };
     // con data e ora di partenza Valhalla rispetta i divieti a orario che conosce (es. hgv:conditional)
     if (opt.departure && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(opt.departure)) body.date_time = { type: 1, value: opt.departure.slice(0, 16) };
+    // punti non transitabili da evitare: Valhalla esclude le strade più vicine a ciascuno
+    if (opt.avoid && opt.avoid.length) body.exclude_locations = opt.avoid.slice(0, 50).map((p) => ({ lat: +p.lat.toFixed(6), lon: +p.lon.toFixed(6) }));
     return body;
   }
 
@@ -187,6 +190,17 @@
       },
     };
     if (avoid.length) body.options.avoid_features = avoid;
+    // punti non transitabili da evitare: un quadrato di circa 24 m intorno a ciascuno
+    if (opt.avoid && opt.avoid.length) {
+      body.options.avoid_polygons = {
+        type: 'MultiPolygon',
+        coordinates: opt.avoid.slice(0, 50).map((p) => {
+          const dLat = 12 / 110540, dLon = 12 / (111320 * Math.cos(p.lat * Math.PI / 180));
+          const r6 = (x) => +x.toFixed(6);
+          return [[[r6(p.lon - dLon), r6(p.lat - dLat)], [r6(p.lon + dLon), r6(p.lat - dLat)], [r6(p.lon + dLon), r6(p.lat + dLat)], [r6(p.lon - dLon), r6(p.lat + dLat)], [r6(p.lon - dLon), r6(p.lat - dLat)]]];
+        }),
+      };
+    }
     const r = await request(URLS.ors + '/v2/directions/driving-hgv/geojson', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: key, Accept: 'application/json, application/geo+json' },

@@ -87,6 +87,9 @@
             <label class="check" for="opt-hgv"><input type="checkbox" id="opt-hgv" checked>
               <span><b>Evita strade vietate ai mezzi pesanti</b><small>Più prudente. Se il percorso non si trova, disattivala: molti divieti per i camion non valgono per i bus.</small></span>
             </label>
+            <label class="check" for="opt-avoid"><input type="checkbox" id="opt-avoid" checked>
+              <span><b>Cerca da solo un'alternativa ai punti non transitabili</b><small>Se il percorso più veloce passa da un limite incompatibile, l'app ricalcola evitandolo e mostra il confronto.</small></span>
+            </label>
             <label class="check" for="opt-tolls"><input type="checkbox" id="opt-tolls"><span><b>Evita pedaggi</b></span></label>
             <label class="check" for="opt-highways"><input type="checkbox" id="opt-highways"><span><b>Evita autostrade</b></span></label>
             <label class="check" for="opt-ferries"><input type="checkbox" id="opt-ferries" checked><span><b>Evita traghetti</b></span></label>
@@ -182,6 +185,8 @@
             <div class="kpi"><span class="kpi-val" id="sum-arrive">—</span><span class="kpi-lab">arrivo</span></div>
           </div>
           <div class="chips" id="sum-chips"></div>
+
+          <div class="route-notes" id="route-notes" role="status"></div>
 
           <div class="osm-check" id="check-banner" role="status"></div>
 
