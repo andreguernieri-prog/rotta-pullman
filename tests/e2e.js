@@ -35,7 +35,7 @@ function serve() {
 
 /* ---------------- servizi simulati ---------------- */
 const VIA_A1 = [[45.4860, 9.2044], [45.40, 9.33], [45.31, 9.50], [45.05, 9.70], [44.80, 10.33], [44.65, 10.93], [44.50, 11.34], [44.25, 11.30], [43.95, 11.20], [43.7629, 11.2650]];
-const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null, tomtomUrls: [], vicino: false, orario: false, dateTimes: [], parkNoBus: false, blockDest: false, unreachableDest: false, honorExclude: false, fixedCoords: null, valhallaBodies: [] };
+const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null, tomtomUrls: [], vicino: false, orario: false, dateTimes: [], parkNoBus: false, blockDest: false, unreachableDest: false, honorExclude: false, fixedCoords: null, valhallaBodies: [], viaduct: false, traceFail: false, traceCalls: 0 };
 
 function densify(pts, step) {
   const out = [];
@@ -103,6 +103,32 @@ function mockValhalla(url) {
   return { status: 200, body: { trip: { legs, summary: { length: totLen / 1000, time: totTime, has_toll: true, has_highway: true, has_ferry: false }, status: 0, units: 'kilometers', language: 'it-IT' } } };
 }
 
+/* strade percorse (trace_attributes): le vie dei limiti che coincidono col percorso sono quelle percorse;
+   con mocks.viaduct il tratto della via 106 è un viadotto (via 777000) e la via 106 passa sotto */
+function mockTrace(text) {
+  mocks.traceCalls++;
+  if (mocks.traceFail) return { status: 504, body: { error: 'timeout' } };
+  const body = JSON.parse(text);
+  const shape = C.decodePolyline(body.encoded_polyline, 6);
+  const ways = (mocks.fixedCoords || mocks.lastCoords) ? mockOverpass('corridoio').elements.filter((e) => e.type === 'way' && e.geometry && !/^(services|rest_area)$/.test(e.tags.highway || '')) : [];
+  const idAt = (p) => {
+    for (const w of ways) {
+      if (w.geometry.some((g) => C.haversine(p, [g.lat, g.lon]) < 3)) return mocks.viaduct && w.id === 106 ? 777000 : w.id;
+    }
+    return 900000 + Math.floor(shape.length ? 0 : 0);
+  };
+  const edges = [];
+  let start = 0, cur = idAt(shape[0]);
+  for (let i = 1; i < shape.length; i++) {
+    const id = idAt(shape[i]);
+    if (id !== cur || i === shape.length - 1) {
+      edges.push({ way_id: cur, bridge: cur === 777000, tunnel: false, begin_shape_index: start, end_shape_index: i });
+      start = i; cur = id;
+    }
+  }
+  return { status: 200, body: { shape: body.encoded_polyline, edges } };
+}
+
 function offsetPoint(coords, frac, meters) {
   const i = Math.floor(coords.length * frac);
   const a = coords[i], b = coords[i + 1];
@@ -150,7 +176,8 @@ function mockOverpass(data) {
       sv(0.3, 160, 201, 'Area di servizio Arda'),
       sv(0.55, 150, 202, 'Area di servizio Secchia Est'),
       sv(0.56, -150, 203, 'Area di servizio Secchia Ovest'),
-    ].concat(mocks.orario ? [wayOn(c, 0.7, 4, 105, { highway: 'secondary', name: 'Via del Mercato', 'bus:conditional': 'no @ (Mo-Fr)' })] : [])
+    ].concat(mocks.viaduct ? [wayOn(c, 0.5, 3, 106, { highway: 'service', maxheight: '2.2' })] : [])
+      .concat(mocks.orario ? [wayOn(c, 0.7, 4, 105, { highway: 'secondary', name: 'Via del Mercato', 'bus:conditional': 'no @ (Mo-Fr)' })] : [])
       .concat(mocks.vicino ? [Object.assign({ type: 'node', id: 7001, tags: { maxheight: '3.2', barrier: 'height_restrictor' } }, (() => { const q = offsetPoint(c, 0.45, 4); return { lat: q.lat, lon: q.lon }; })())] : []),
   };
 }
@@ -242,6 +269,7 @@ async function setupRoutes(context) {
   await context.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
     const url = route.request().url();
     const json = (o, status) => route.fulfill({ status: status || 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(o) });
+    if (url.includes('valhalla1.openstreetmap.de/trace_attributes')) { const r = mockTrace(route.request().postData()); return json(r.body, r.status); }
     if (url.includes('valhalla1.openstreetmap.de/route')) { const r = mockValhalla(url); return json(r.body, r.status); }
     if (url.includes('photon.komoot.io')) return json(mockPhoton(url));
     if (url.includes('nominatim.openstreetmap.org/reverse')) return json(mockNominatimReverse(url));
@@ -597,7 +625,7 @@ async function setupRoutes(context) {
       await q.waitForFunction(() => window.__rp.state.analysis.status === 'done' && document.querySelectorAll('#hazards .hz').length === 4, null, { timeout: 30000 });
       const items = await q.locator('#hazards .hz').allTextContents();
       assert.ok(items.some((t) => /Tratto evitato da TomTom/.test(t)), 'tratto segnalato solo da TomTom');
-      assert.ok(items.some((t) => /Altezza massima 3,9 m.*Anche TomTom evita/s.test(t)), 'ponte confermato');
+      assert.ok(items.some((t) => /Altezza massima 3,9 m.*TomTom non usa questo tratto con il tuo mezzo/s.test(t)), 'ponte confermato');
       assert.ok(items.some((t) => /Divieto per mezzi pesanti.*TomTom percorre/s.test(t)), 'divieto camion smentito');
       assert.match(await q.textContent('#check-banner'), /Vedi tutti i 4 punti/);
       // scheda del sottopasso: data, fonte, dubbio, foto e cartelli Mapillary, segnalazione
@@ -839,6 +867,45 @@ async function setupRoutes(context) {
     });
     Object.assign(mocks, { honorExclude: false, fixedCoords: null });
     await actx.close();
+  }
+
+  /* --- limite su una strada sotto il viadotto percorso (caso Park Piovese) --- */
+  {
+    const bctx = await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: 'it-IT', timezoneId: 'Europe/Rome' });
+    await setupRoutes(bctx);
+    Object.assign(mocks, { viaduct: true, traceFail: false, traceCalls: 0, lastCoords: null, fixedCoords: null });
+    const q = await bctx.newPage();
+    watch(q, 'viadotto');
+    await q.goto(base);
+    await step('limite sotto il viadotto: escluso in automatico grazie alle strade riconosciute, ripristinabile', async () => {
+      await q.waitForFunction(() => window.__rp.state.analysis && window.__rp.state.analysis.status === 'done', null, { timeout: 30000 });
+      assert.ok(mocks.traceCalls >= 1, 'strade del percorso chieste a Valhalla');
+      assert.doesNotMatch(await q.textContent('#hazards > .hz:not(.maybe)') || '', /2,2 m/);
+      assert.equal(await q.locator('#hazards > .hz', { hasText: 'Altezza massima 2,2 m' }).count(), 0);
+      assert.match(await q.textContent('#check-banner'), /^1 punto non transitabile/);
+      await q.click('.hz-excluded summary');
+      const ex = await q.textContent('.hz-excluded');
+      assert.match(ex, /Altezza massima 2,2 m.*passa sotto o sopra il percorso/s);
+      await q.screenshot({ path: path.join(OUT, '18-viadotto-escluso.png') });
+      await q.click('.hz-excluded button:has-text("Ripristina")');
+      await q.waitForFunction(() => /^2 punti non transitabili/.test(document.querySelector('#check-banner').textContent));
+    });
+    // se il riconoscimento delle strade non risponde: regola di riserva, il limite è solo "forse"
+    mocks.traceFail = true;
+    await q.evaluate(() => { try { localStorage.removeItem('rotta-pullman/decisioni'); } catch (e) { /* */ } });
+    await q.reload();
+    await step('senza strade riconosciute: stradina di servizio sotto una strada con nome segnata come "forse"', async () => {
+      await q.evaluate(() => window.__rp.computeRoute());
+      await q.waitForFunction(() => window.__rp.state.analysis && window.__rp.state.analysis.status === 'done', null, { timeout: 40000 });
+      const item = q.locator('#hazards > .hz.maybe', { hasText: 'Altezza massima 2,2 m' });
+      assert.equal(await item.count(), 1);
+      assert.match(await q.textContent('#check-banner'), /non sono state riconosciute una per una/);
+      await item.locator('button', { hasText: 'Mostra sulla mappa' }).click();
+      await q.waitForSelector('.hz-popup .hzpop-maybe', { timeout: 5000 });
+      assert.match(await q.textContent('.hz-popup .hzpop-maybe'), /stradina di servizio senza nome che sulla mappa coincide con/);
+    });
+    Object.assign(mocks, { viaduct: false, traceFail: false });
+    await bctx.close();
   }
 
   /* --- tema scuro --- */

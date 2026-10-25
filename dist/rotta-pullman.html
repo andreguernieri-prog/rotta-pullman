@@ -1017,7 +1017,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 .hz-doubt { display: block; color: var(--amber); font-size: 13px; font-weight: 600; }
 .tt-verdict { display: block; font-size: 13px; font-weight: 600; color: var(--muted); }
 .tt-verdict.passa { color: var(--ok); }
-.tt-verdict.evita { color: var(--red); }
+.tt-verdict.evita { color: var(--amber); }
 .tt-verdict.passa.conflitto { color: var(--amber); }
 .hzpop-trust { display: flex; flex-direction: column; gap: 3px; font-size: 13px; }
 .hzpop-photo { display: flex; flex-direction: column; gap: 4px; }
@@ -2510,7 +2510,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
       case 'bus':
         return 'Divieto di transito per gli autobus. ' + evita;
       case 'tomtom':
-        return 'TomTom, che raccoglie i limiti con veicoli propri, evita questo tratto con le dimensioni del tuo mezzo ma lo percorre con un\'auto: probabilmente c\'è un limite che OpenStreetMap non riporta (ponte basso, strettoia, divieto). Controlla con Street View; se è confermato, ' + evita.charAt(0).toLowerCase() + evita.slice(1);
+        return 'TomTom, che raccoglie i limiti con veicoli propri, evita questo tratto con le dimensioni del tuo mezzo ma lo percorre con un\'auto: potrebbe esserci un limite che OpenStreetMap non riporta (ponte basso, strettoia, divieto), ma la scelta di TomTom può dipendere anche da altro. Controlla con Street View; se il limite c\'è, ' + evita.charAt(0).toLowerCase() + evita.slice(1);
       case 'pesanti':
         return 'Su OpenStreetMap questo divieto si usa di solito per il cartello con il camion, che vale per i veicoli che trasportano merci e non per gli autobus. Se sul cartello c\'è solo il camion, il bus può passare; se c\'è un limite di peso o il simbolo dell\'autobus, no. Controlla il cartello con Street View.';
       case 'orario': {
@@ -2638,8 +2638,9 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
   /* ordine dei punti: prima quelli sul percorso, poi i non transitabili, poi per posizione */
   /* prima i punti sul percorso, poi quelli vicini, in fondo i divieti a orario non in vigore al passaggio */
   const SEV_RANK = { red: 0, amber: 1, info: 2 };
+  const groupOf = (h) => (h.rel === 'escluso' ? 3 : h.severity === 'info' ? 2 : h.rel === 'vicino' ? 1 : 0);
   function hazardOrder(a, b) {
-    const ga = a.severity === 'info' ? 2 : a.rel === 'vicino' ? 1 : 0, gb = b.severity === 'info' ? 2 : b.rel === 'vicino' ? 1 : 0;
+    const ga = groupOf(a), gb = groupOf(b);
     if (ga !== gb) return ga - gb;
     if (a.severity !== b.severity) return (SEV_RANK[a.severity] || 0) - (SEV_RANK[b.severity] || 0);
     return a.alongStart - b.alongStart;
@@ -2709,11 +2710,35 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
         }
       } else continue;
 
+      // strade percorse riconosciute per identificativo (Valhalla): dicono con certezza se il limite è sulla
+      // strada percorsa, su un'altra che le si sovrappone sulla mappa, o sotto/sopra un ponte o una galleria
+      let reason = null, excluded = null;
+      const rw = opts.routeWays;
+      const mid = (rel.alongStart + rel.alongEnd) / 2;
+      const covered = !!(rw && rw.size && rel.onRoute && rw.covers(mid));
+      if (covered) {
+        const level = rw.levelAt(rel.alongStart, rel.alongEnd); // il percorso qui è su un ponte o in galleria
+        const elLevel = (tags.bridge && tags.bridge !== 'no') || (tags.tunnel && tags.tunnel !== 'no');
+        if (el.type === 'way') {
+          if (rw.has(el.id)) { rel.vicino = false; reason = 'id'; }
+          else if (level && !elLevel) excluded = 'livello';
+          else { rel.vicino = true; reason = 'altra-strada'; }
+        } else if (level && !elLevel && (tags.maxheight != null || tags['maxheight:physical'] != null || tags.maxwidth != null || tags['maxwidth:physical'] != null)) {
+          rel.vicino = true; reason = 'ponte';
+        }
+      }
+
       // "vicino" ma con lo stesso nome o sigla della strada percorsa: è sul percorso
       let promoted = null;
-      if (rel.onRoute && rel.vicino && opts.streetAt && sameRoad(tags, opts.streetAt((rel.alongStart + rel.alongEnd) / 2))) {
+      if (!covered && rel.onRoute && rel.vicino && opts.streetAt && sameRoad(tags, opts.streetAt(mid))) {
         rel.vicino = false;
         promoted = 'nome';
+      }
+      // senza strade riconosciute: una stradina di servizio senza nome che sulla mappa coincide con una strada
+      // con un nome (es. il corsello di un parcheggio sotto un viadotto) è solo "forse" sul percorso
+      if (!covered && rel.onRoute && !rel.vicino && el.type === 'way' && /^(service|track)$/.test(tags.highway || '') && !tags.name && !tags.ref && opts.streetAt && opts.streetAt(mid)) {
+        rel.vicino = true;
+        reason = 'servizio';
       }
 
       let issues;
@@ -2722,9 +2747,9 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
         issues = ci.timed ? ci.fixed.concat([ci.timed]) : ci.fixed;
       } else issues = evaluateTags(tags, veh);
       if (rel.onRoute) {
-        if (!rel.vicino) checked++;
+        if (!rel.vicino && !excluded) checked++;
         for (const is of issues) raw.push(Object.assign({}, is, {
-          rel: rel.vicino ? 'vicino' : 'certo', distM: rel.minDist, promoted,
+          rel: excluded ? 'escluso' : rel.vicino ? 'vicino' : 'certo', distM: rel.minDist, promoted, reason, excluded,
           road: { bridge: tags.bridge || null, tunnel: tags.tunnel || null, layer: tags.layer || null },
           ids: [el.type + '/' + el.id], name: tags.name || tags.ref || '', meta: osmMeta(el, is.kind),
           alongStart: rel.alongStart, alongEnd: rel.alongEnd,
@@ -3123,6 +3148,28 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
   }
 
   /* ------------------------------------------------------------------ */
+  /* Strade percorse, riconosciute per identificativo                    */
+  /* ------------------------------------------------------------------ */
+  /*
+   * runs: [{ a, b, id, bridge, tunnel }], a e b in metri dalla partenza.
+   *   has(id)        la via OSM è tra quelle percorse
+   *   covers(along)  in quel punto le strade sono state riconosciute (un tratto può mancare)
+   *   levelAt(a, b)  tra a e b il percorso passa su un ponte o in galleria
+   */
+  function makeRouteWays(runs) {
+    const list = (runs || []).filter((x) => x && isFinite(x.a) && isFinite(x.b))
+      .map((x) => ({ a: Math.min(x.a, x.b), b: Math.max(x.a, x.b), id: Number(x.id), bridge: !!x.bridge, tunnel: !!x.tunnel }))
+      .sort((p, q) => p.a - q.a);
+    const ids = new Set(list.map((x) => x.id));
+    return {
+      size: list.length,
+      has: (id) => ids.has(Number(id)),
+      covers: (al) => list.some((x) => al >= x.a - 40 && al <= x.b + 40),
+      levelAt: (a0, a1) => list.some((x) => x.b >= a0 - 5 && x.a <= a1 + 5 && (x.bridge || x.tunnel)),
+    };
+  }
+
+  /* ------------------------------------------------------------------ */
   /* Alternative: punti da evitare, tratto a piedi                       */
   /* ------------------------------------------------------------------ */
   const AVOID_NEAR_STOP = 150; // un punto critico attaccato a una tappa non si evita cambiando strada
@@ -3302,7 +3349,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
     planTrip, fmtDur, fmtDist, fmtClock, fmtNum, stopLetter, parseCoords,
     buildGpx, encodeShare, decodeShare, normName, matchPermit, groupPermits,
     tileKey, tilesAround, tilesForCoords, pointInRings, coordsCovered, tileToElements,
-    PARK_NEAR, PARK_FAR, ringArea, parkingKind, pickParkings, nearOfficial, blockersNear, avoidPoints, mergeAvoid, walkEstimate,
+    PARK_NEAR, PARK_FAR, ringArea, parkingKind, pickParkings, nearOfficial, blockersNear, makeRouteWays, avoidPoints, mergeAvoid, walkEstimate,
   };
 });
 
@@ -3821,6 +3868,51 @@ out body geom;`;
    * Percorso TomTom tra le stesse tappe. mode 'bus': con le dimensioni del mezzo; 'car': come auto.
    * Restituisce i punti [[lat, lon], ...]. Serve la chiave gratuita dell'utente (developer.tomtom.com).
    */
+  /*
+   * Strade OpenStreetMap percorse (Valhalla trace_attributes): per ogni strada l'identificativo della via,
+   * se è un ponte o una galleria, e dove inizia e finisce. Serve a dire con certezza se un limite è sulla
+   * strada percorsa o su una che passa sotto o sopra. Il servizio pubblico accetta tracce fino a 200 km:
+   * il percorso si invia a tratti di circa 80 km. Un tratto che non risponde resta scoperto (failed).
+   * La richiesta è un POST "semplice" (testo), senza intestazioni aggiuntive.
+   */
+  const TRACE_CHUNK_M = 80000;
+  async function traceWays(coords, signal) {
+    const chunks = [];
+    let cur = [coords[0]], len = 0;
+    for (let i = 1; i < coords.length; i++) {
+      cur.push(coords[i]);
+      len += C.haversine(coords[i - 1], coords[i]);
+      if (len >= TRACE_CHUNK_M && i < coords.length - 1) { chunks.push(cur); cur = [coords[i]]; len = 0; }
+    }
+    if (cur.length > 1) chunks.push(cur);
+    const runs = [];
+    let failed = 0;
+    for (const ch of chunks) {
+      const pts = ch.length > 4000 ? C.simplify(ch, 1) : ch;
+      const body = {
+        encoded_polyline: C.encodePolyline(pts, 6),
+        costing: 'auto',
+        shape_match: 'walk_or_snap',
+        filters: { attributes: ['shape', 'edge.way_id', 'edge.bridge', 'edge.tunnel', 'edge.begin_shape_index', 'edge.end_shape_index'], action: 'include' },
+      };
+      let r;
+      try {
+        r = await request(URLS.valhalla + '/trace_attributes', { method: 'POST', body: JSON.stringify(body), signal }, 30000);
+      } catch (e) {
+        if (e.code === 'aborted') throw e;
+        failed++; continue;
+      }
+      if (!r.ok || !r.data || !Array.isArray(r.data.edges) || !r.data.shape) { failed++; continue; }
+      const shape = C.decodePolyline(r.data.shape, 6);
+      for (const e of r.data.edges) {
+        const a = shape[e.begin_shape_index], b = shape[e.end_shape_index];
+        if (!a || !b || e.way_id == null) continue;
+        runs.push({ id: Number(e.way_id), bridge: !!e.bridge, tunnel: !!e.tunnel, from: a, to: b });
+      }
+    }
+    return { runs, failed, chunks: chunks.length };
+  }
+
   async function tomtomRoute(stops, veh, margin, opt, key, mode, signal) {
     const locs = stops.map((s) => s.lat.toFixed(6) + ',' + s.lon.toFixed(6)).join(':');
     const u = new URL('https://api.tomtom.com/routing/1/calculateRoute/' + locs + '/json');
@@ -3876,7 +3968,7 @@ out body geom;`;
     return { image: list[0] || null, signs };
   }
 
-  root.RPServices = { URLS, ServiceError, geocode, geocodeFallback, reverse, routeValhalla, routeOrs, corridor, corridorQuery, parkings, valhallaBody, comuneAt, sleep, dataIndex, dataTiles, tomtomRoute, mapillaryNear };
+  root.RPServices = { URLS, ServiceError, geocode, geocodeFallback, reverse, routeValhalla, routeOrs, corridor, corridorQuery, parkings, valhallaBody, comuneAt, sleep, dataIndex, dataTiles, tomtomRoute, mapillaryNear, traceWays };
 })(typeof self !== 'undefined' ? self : this);
 
 </script>
@@ -5204,6 +5296,7 @@ out body geom;`;
       renderResult();
       showTab('percorso');
       fitAll();
+      r.waysPromise = loadRouteWays(my, r, signal);
       runParkings(my, signal); // richiesta breve: entra per prima nella coda di Overpass
       runAnalysis(my, signal);
       runPermits(my, signal);
@@ -5412,18 +5505,51 @@ out body geom;`;
       // con i dati scaricati i tratti arrivano in pochi millisecondi: si rianalizza al massimo una volta al secondo
       const lastOne = a.done === todo.length;
       if (lastOne || Date.now() - (a.analyzedAt || 0) > 1000) {
-        Object.assign(a, C.analyzeElements(Array.from(elements.values()), r.index, r.vehicle, { streetAt: (al) => C.streetAtAlong(r, al) }));
-        for (const sv of a.services) sv.T = C.timeAtAlong(r, sv.along);
-        a.analyzedAt = Date.now();
+        analyzeNow(a, r);
         drawHazards(); renderHazards(); renderMini();
       }
       renderCheck();
+    }
+    // prima di chiudere il controllo si aspettano le strade riconosciute (al massimo 20 secondi)
+    if (r.waysPromise && r.ways === undefined) {
+      try { await Promise.race([r.waysPromise, API.sleep(20000, signal)]); } catch (e) { /* annullato */ }
+      if (my !== seq || state.analysis !== a) return;
+      if (r.ways) { analyzeNow(a, r); drawHazards(); renderHazards(); renderMini(); }
     }
     a.status = !a.failed.length ? 'done' : (a.failed.length === todo.length && !elements.size ? 'error' : 'partial');
     if (a.status === 'error') a.reason = a.lastError;
     replan();
     renderResult();
     if (a.status === 'done') maybeAvoid(my);
+  }
+
+  function analyzeNow(a, r) {
+    Object.assign(a, C.analyzeElements(Array.from(a.elements.values()), r.index, r.vehicle, { streetAt: (al) => C.streetAtAlong(r, al), routeWays: r.ways || null }));
+    for (const sv of a.services) sv.T = C.timeAtAlong(r, sv.along);
+    a.analyzedAt = Date.now();
+  }
+
+  /* strade OSM percorse (Valhalla): con queste il controllo sa quali limiti sono davvero sul percorso */
+  async function loadRouteWays(my, r, signal) {
+    try {
+      const res = await API.traceWays(r.coords, signal);
+      if (my !== seq) return;
+      const runs = [];
+      for (const x of res.runs) {
+        const a = r.index.nearest(x.from[0], x.from[1], 60), b = r.index.nearest(x.to[0], x.to[1], 60);
+        if (a && b) runs.push({ a: a.along, b: b.along, id: x.id, bridge: x.bridge, tunnel: x.tunnel });
+      }
+      r.ways = runs.length ? C.makeRouteWays(runs) : null;
+      r.waysInfo = { chunks: res.chunks, failed: res.failed };
+    } catch (e) {
+      if (e.code === 'aborted') return;
+      r.ways = null;
+    }
+    // controllo già finito (strade arrivate tardi): si rifà con le strade riconosciute
+    const a = state.analysis;
+    if (my === seq && state.route === r && a && a.elements instanceof Map && a.elements.size && a.status !== 'loading') {
+      analyzeNow(a, r); drawHazards(); renderHazards(); renderCheck(); renderMini();
+    }
   }
 
   function retryAnalysis(only) {
@@ -5573,7 +5699,7 @@ out body geom;`;
 
   const TT_VERDICT = {
     passa: 'TomTom percorre questo tratto con le dimensioni del tuo mezzo.',
-    evita: 'Anche TomTom evita questo tratto con il tuo mezzo: il limite è probabilmente reale.',
+    evita: 'TomTom non usa questo tratto con il tuo mezzo ma lo usa in auto: può confermare il limite, ma può dipendere anche da altro.',
     altrove: 'TomTom fa passare sia il bus sia l\'auto da un\'altra strada: qui non si può confrontare.',
   };
   /* giudizio di TomTom, con l'avviso quando contraddice un limite "non transitabile" */
@@ -5642,6 +5768,18 @@ out body geom;`;
         h('button', { type: 'button', class: 'btn-ghost', onclick: () => setDecision(hz, null) }, 'Annulla'));
     }
     if (hz.rel !== 'vicino') return null;
+    if (hz.reason === 'altra-strada' || hz.reason === 'ponte' || hz.reason === 'servizio') {
+      const street = C.streetAtAlong(state.route, hz.alongStart);
+      const why = hz.reason === 'altra-strada' ? 'Secondo il calcolo del percorso, la strada del limite non è tra quelle percorse, anche se sulla mappa le due si sovrappongono.'
+        : hz.reason === 'ponte' ? 'Qui il percorso passa su un ponte o in galleria: il limite potrebbe riguardare la strada sotto o sopra.'
+          : `Il limite è su una stradina di servizio senza nome che sulla mappa coincide con ${street ? '«' + street + '»' : 'la strada percorsa'}: può essere il corsello di un parcheggio o una corsia sotto un viadotto.`;
+      return h('div', { class: 'hzpop-maybe' },
+        h('b', { text: 'Forse non sul percorso' }),
+        h('span', { text: why + ' Controlla con Street View e indica se riguarda il tuo tragitto.' }),
+        h('div', { class: 'hzpop-decide' },
+          h('button', { type: 'button', class: 'btn-secondary', onclick: () => setDecision(hz, 'si') }, 'Riguarda il percorso'),
+          h('button', { type: 'button', class: 'btn-secondary', onclick: () => setDecision(hz, 'no') }, 'Non riguarda il percorso')));
+    }
     const r = hz.road || {};
     const tipo = r.bridge && r.bridge !== 'no' ? 'è su un ponte o viadotto' : r.tunnel && r.tunnel !== 'no' ? 'è in galleria' : 'non risulta né su un ponte né in galleria';
     const dist = Math.max(1, Math.round(hz.distM || 0));
@@ -5667,7 +5805,7 @@ out body geom;`;
     const percorsa = C.streetAtAlong(state.route, hz.alongStart);
     const rows = [['Strada percorsa', percorsa || 'non indicata']];
     if (isOsm) rows.push(['Strada del limite', hz.name || 'senza nome']);
-    if (hz.rel === 'vicino' && hz.distM != null) rows.push(['Distanza dal percorso', `${Math.max(1, Math.round(hz.distM))} m`]);
+    if (hz.rel === 'vicino' && hz.distM >= 2) rows.push(['Distanza dal percorso', `${Math.round(hz.distM)} m`]);
     rows.push(['Posizione', hazardKm(hz) + ' dalla partenza'], ['Vicino a', near]);
     if (hz.kind === 'orario') rows.push(['Quando vale', hz.when]);
     if (eta) rows.push(['Ci arrivi', hz.kind === 'orario' ? passText(eta) : 'verso le ' + C.fmtClock(eta, depMs())]);
@@ -5816,7 +5954,8 @@ out body geom;`;
       }
       if (tt) o.tomtom = tt.verdict(hz.alongStart, hz.alongEnd);
       o.decisione = decisionOf(hz);
-      if (o.decisione === 'si' && o.rel === 'vicino') { o.rel = 'certo'; o.confermato = true; }
+      if (o.decisione === 'si' && (o.rel === 'vicino' || o.rel === 'escluso')) { o.rel = 'certo'; o.confermato = true; }
+      if (o.rel === 'escluso') o.autoEscluso = true;
       return o;
     });
     if (tt) {
@@ -5850,8 +5989,8 @@ out body geom;`;
       default: return `Non si può stabilire se vale quando passi (${when}).`;
     }
   }
-  function allHazards() { return hazardsWithStatus().filter((hz) => hz.decisione !== 'no'); }
-  function excludedHazards() { return hazardsWithStatus().filter((hz) => hz.decisione === 'no'); }
+  function allHazards() { return hazardsWithStatus().filter((hz) => hz.decisione !== 'no' && !hz.autoEscluso); }
+  function excludedHazards() { return hazardsWithStatus().filter((hz) => hz.decisione === 'no' || hz.autoEscluso); }
 
   function hazardCounts() {
     const a = state.analysis;
@@ -6066,6 +6205,9 @@ out body geom;`;
       body.append(h('span', { class: 'so-far src', text: (c.orari ? `${plural(c.orari, 'divieto', 'divieti')} a giorni e orari sul percorso non ${c.orari === 1 ? 'è' : 'sono'} in vigore quando passi. ` : '') + CALENDARIO_NOTE }));
       const fonte = dataSourceNote(a);
       if (fonte) body.append(h('span', { class: 'so-far src', text: fonte.text }));
+      const rr = state.route;
+      if (rr && rr.ways === null) body.append(h('span', { class: 'so-far src', text: 'Le strade del percorso non sono state riconosciute una per una: il controllo si basa solo sulla mappa.' }));
+      else if (rr && rr.ways && rr.waysInfo && rr.waysInfo.failed) body.append(h('span', { class: 'so-far src', text: 'Strade del percorso riconosciute solo in parte: per i tratti mancanti il controllo si basa solo sulla mappa.' }));
       if (fonte && fonte.old) body.append(h('span', { class: 'so-far', text: fonte.old }));
       if (a.status === 'partial') {
         const tot = state.route.segments.length;
@@ -6247,7 +6389,7 @@ out body geom;`;
     return h('li', { class: 'hz' + (maybe ? ' maybe' : '') + (hz.severity === 'info' ? ' info' : '') },
       h('span', { class: maybe ? 'maybe' : null, svg: hazardSign(hz) }),
       h('div', { class: 'hz-body' },
-        maybe ? h('span', { class: 'maybe-tag', text: `Forse non sul percorso · a ${Math.max(1, Math.round(hz.distM || 0))} m` }) : null,
+        maybe ? h('span', { class: 'maybe-tag', text: 'Forse non sul percorso' + ((hz.distM || 0) >= 2 ? ` · a ${Math.round(hz.distM)} m` : '') }) : null,
         h('span', { class: 'hz-title' }, hz.title, h('span', { class: `sev sev-${hz.severity}-bg`, text: sevLabel(hz) })),
         hz.kind === 'orario' ? h('span', { class: 'hz-when' }, h('b', { text: 'Quando vale: ' }), hz.when) : null,
         h('span', { text: hz.detail }),
@@ -6293,9 +6435,10 @@ out body geom;`;
     if (ex.length) {
       ul.append(h('li', { class: 'hz-excluded' }, h('details', null,
         h('summary', null, `Esclusi perché non riguardano il percorso (${ex.length})`),
+        ex.some((x) => x.autoEscluso) ? h('p', { class: 'hz-meta', text: 'Quelli esclusi in automatico sono su strade che passano sotto o sopra il percorso: il calcolo del percorso dice che qui passi su un ponte o in galleria.' }) : null,
         h('ul', null, ex.map((hz) => h('li', null,
-          h('span', { text: `${hz.title} · ${hazardKm(hz)}` }),
-          h('button', { type: 'button', class: 'btn-ghost', onclick: () => setDecision(hz, null) }, 'Ripristina')))))));
+          h('span', { text: `${hz.title} · ${hazardKm(hz)}` + (hz.autoEscluso ? ' · su una strada che passa sotto o sopra il percorso, che qui è su un ponte o in galleria' : '') }),
+          h('button', { type: 'button', class: 'btn-ghost', onclick: () => setDecision(hz, hz.autoEscluso ? 'si' : null) }, 'Ripristina')))))));
     }
   }
 

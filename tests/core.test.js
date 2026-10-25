@@ -665,3 +665,53 @@ test('parcheggi ufficiali: archivio coerente e vicini all\'arrivo', () => {
   assert.ok(near.every((x) => x.citta === 'firenze'));
   assert.equal(C.nearOfficial(P.parcheggi, { lat: 46.17, lon: 10.07 }, 15000).length, 0); // Teglio
 });
+
+/* ------------------- strade del percorso riconosciute per identificativo ------------------- */
+test('strade percorse: limite sotto un viadotto escluso, sulla via percorsa certo, su altra via forse', () => {
+  const coords = straightRoute(45.37, 11.91, 40, 0.0005); // ~2,2 km verso nord
+  const idx = new C.RouteIndex(coords);
+  const along = (i) => idx.cumD[i];
+  const seg = (from, to) => coords.slice(from, to + 1).map(([lat, lon]) => ({ lat, lon }));
+  // il percorso: via 1 fino al vertice 10, viadotto (via 2, ponte) fino al 20, poi via 3
+  const ways = C.makeRouteWays([
+    { a: along(0), b: along(10), id: 1 },
+    { a: along(10), b: along(20), id: 2, bridge: true },
+    { a: along(20), b: along(39), id: 3 },
+  ]);
+  assert.equal(ways.has(2), true);
+  assert.equal(ways.covers(along(15)), true);
+  assert.equal(ways.levelAt(along(12), along(14)), true);
+  assert.equal(ways.levelAt(along(25), along(30)), false);
+  const els = [
+    // corsello del parcheggio sotto il viadotto, disegnato esattamente sotto (come Park Piovese)
+    { type: 'way', id: 135253137, tags: { highway: 'service', maxheight: '2.2' }, geometry: seg(12, 15) },
+    // limite sulla via percorsa
+    { type: 'way', id: 3, tags: { highway: 'primary', maxheight: '3.5', name: 'Via Tre' }, geometry: seg(25, 27) },
+    // altra via sovrapposta sulla mappa, non su un ponte
+    { type: 'way', id: 77, tags: { highway: 'residential', maxheight: '3.0', name: 'Via Parallela' }, geometry: seg(31, 33) },
+  ];
+  const a = C.analyzeElements(els, idx, veh, { routeWays: ways, streetAt: () => 'Corso Primo Maggio' });
+  const by = (id) => a.hazards.find((h) => h.ids.includes('way/' + id));
+  assert.equal(by(135253137).rel, 'escluso');
+  assert.equal(by(135253137).excluded, 'livello');
+  assert.equal(by(3).rel, 'certo');
+  assert.equal(by(3).reason, 'id');
+  assert.equal(by(77).rel, 'vicino');
+  assert.equal(by(77).reason, 'altra-strada');
+  assert.equal(a.checked, 1);
+  // ordine: gli esclusi in fondo
+  assert.equal(a.hazards[a.hazards.length - 1].rel, 'escluso');
+});
+
+test('senza strade riconosciute: stradina di servizio senza nome sovrapposta a una strada con nome è "forse"', () => {
+  const coords = straightRoute(45.37, 11.91, 40, 0.0005);
+  const idx = new C.RouteIndex(coords);
+  const seg = coords.slice(12, 16).map(([lat, lon]) => ({ lat, lon }));
+  const els = [{ type: 'way', id: 135253137, tags: { highway: 'service', maxheight: '2.2' }, geometry: seg }];
+  const named = C.analyzeElements(els, idx, veh, { streetAt: () => 'Corso Primo Maggio' });
+  assert.equal(named.hazards[0].rel, 'vicino');
+  assert.equal(named.hazards[0].reason, 'servizio');
+  // se anche il percorso è su una stradina senza nome (es. ingresso di un parcheggio), il limite resta sicuro
+  const unnamed = C.analyzeElements(els, idx, veh, { streetAt: () => '' });
+  assert.equal(unnamed.hazards[0].rel, 'certo');
+});

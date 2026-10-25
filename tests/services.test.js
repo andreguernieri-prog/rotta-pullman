@@ -98,3 +98,28 @@ test('overpass: parcheggi per bus fino a 5 km, generici entro 1 km con il perime
   assert.match(q, /out body geom;/);
   assert.match(q, /multi-storey/);
 });
+
+test('valhalla: strade percorse a tratti di 80 km, con ponti e gallerie; un tratto senza risposta resta scoperto', async () => {
+  const coords = [];
+  for (let i = 0; i <= 200; i++) coords.push([45 + i * 0.009, 9]); // ~200 km verso nord
+  const sent = [];
+  let n = 0;
+  global.fetch = async (url, opts) => {
+    sent.push({ url: String(url), opts });
+    const body = JSON.parse(opts.body);
+    const shape = global.RPCore.decodePolyline(body.encoded_polyline, 6);
+    if (++n === 2) return res(504, 'Gateway Timeout');
+    return res(200, JSON.stringify({ shape: body.encoded_polyline, edges: [
+      { way_id: 100 + n, bridge: n === 1, tunnel: false, begin_shape_index: 0, end_shape_index: Math.floor(shape.length / 2) },
+      { way_id: 200 + n, begin_shape_index: Math.floor(shape.length / 2), end_shape_index: shape.length - 1 },
+    ] }));
+  };
+  const out = await S.traceWays(coords);
+  assert.equal(out.chunks, 3);
+  assert.equal(out.failed, 1);
+  assert.equal(out.runs.length, 4);
+  assert.deepEqual(out.runs.map((r) => r.id), [101, 201, 103, 203]);
+  assert.equal(out.runs[0].bridge, true);
+  assert.ok(sent.every((x) => x.url.endsWith('/trace_attributes') && x.opts.method === 'POST' && !x.opts.headers), 'POST semplice, senza intestazioni');
+  assert.deepEqual(JSON.parse(sent[0].opts.body).filters.attributes.slice(0, 2), ['shape', 'edge.way_id']);
+});

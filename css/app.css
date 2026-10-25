@@ -339,7 +339,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 .hz-doubt { display: block; color: var(--amber); font-size: 13px; font-weight: 600; }
 .tt-verdict { display: block; font-size: 13px; font-weight: 600; color: var(--muted); }
 .tt-verdict.passa { color: var(--ok); }
-.tt-verdict.evita { color: var(--red); }
+.tt-verdict.evita { color: var(--amber); }
 .tt-verdict.passa.conflitto { color: var(--amber); }
 .hzpop-trust { display: flex; flex-direction: column; gap: 3px; font-size: 13px; }
 .hzpop-photo { display: flex; flex-direction: column; gap: 4px; }

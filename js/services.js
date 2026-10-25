@@ -511,6 +511,51 @@ out body geom;`;
    * Percorso TomTom tra le stesse tappe. mode 'bus': con le dimensioni del mezzo; 'car': come auto.
    * Restituisce i punti [[lat, lon], ...]. Serve la chiave gratuita dell'utente (developer.tomtom.com).
    */
+  /*
+   * Strade OpenStreetMap percorse (Valhalla trace_attributes): per ogni strada l'identificativo della via,
+   * se è un ponte o una galleria, e dove inizia e finisce. Serve a dire con certezza se un limite è sulla
+   * strada percorsa o su una che passa sotto o sopra. Il servizio pubblico accetta tracce fino a 200 km:
+   * il percorso si invia a tratti di circa 80 km. Un tratto che non risponde resta scoperto (failed).
+   * La richiesta è un POST "semplice" (testo), senza intestazioni aggiuntive.
+   */
+  const TRACE_CHUNK_M = 80000;
+  async function traceWays(coords, signal) {
+    const chunks = [];
+    let cur = [coords[0]], len = 0;
+    for (let i = 1; i < coords.length; i++) {
+      cur.push(coords[i]);
+      len += C.haversine(coords[i - 1], coords[i]);
+      if (len >= TRACE_CHUNK_M && i < coords.length - 1) { chunks.push(cur); cur = [coords[i]]; len = 0; }
+    }
+    if (cur.length > 1) chunks.push(cur);
+    const runs = [];
+    let failed = 0;
+    for (const ch of chunks) {
+      const pts = ch.length > 4000 ? C.simplify(ch, 1) : ch;
+      const body = {
+        encoded_polyline: C.encodePolyline(pts, 6),
+        costing: 'auto',
+        shape_match: 'walk_or_snap',
+        filters: { attributes: ['shape', 'edge.way_id', 'edge.bridge', 'edge.tunnel', 'edge.begin_shape_index', 'edge.end_shape_index'], action: 'include' },
+      };
+      let r;
+      try {
+        r = await request(URLS.valhalla + '/trace_attributes', { method: 'POST', body: JSON.stringify(body), signal }, 30000);
+      } catch (e) {
+        if (e.code === 'aborted') throw e;
+        failed++; continue;
+      }
+      if (!r.ok || !r.data || !Array.isArray(r.data.edges) || !r.data.shape) { failed++; continue; }
+      const shape = C.decodePolyline(r.data.shape, 6);
+      for (const e of r.data.edges) {
+        const a = shape[e.begin_shape_index], b = shape[e.end_shape_index];
+        if (!a || !b || e.way_id == null) continue;
+        runs.push({ id: Number(e.way_id), bridge: !!e.bridge, tunnel: !!e.tunnel, from: a, to: b });
+      }
+    }
+    return { runs, failed, chunks: chunks.length };
+  }
+
   async function tomtomRoute(stops, veh, margin, opt, key, mode, signal) {
     const locs = stops.map((s) => s.lat.toFixed(6) + ',' + s.lon.toFixed(6)).join(':');
     const u = new URL('https://api.tomtom.com/routing/1/calculateRoute/' + locs + '/json');
@@ -566,5 +611,5 @@ out body geom;`;
     return { image: list[0] || null, signs };
   }
 
-  root.RPServices = { URLS, ServiceError, geocode, geocodeFallback, reverse, routeValhalla, routeOrs, corridor, corridorQuery, parkings, valhallaBody, comuneAt, sleep, dataIndex, dataTiles, tomtomRoute, mapillaryNear };
+  root.RPServices = { URLS, ServiceError, geocode, geocodeFallback, reverse, routeValhalla, routeOrs, corridor, corridorQuery, parkings, valhallaBody, comuneAt, sleep, dataIndex, dataTiles, tomtomRoute, mapillaryNear, traceWays };
 })(typeof self !== 'undefined' ? self : this);

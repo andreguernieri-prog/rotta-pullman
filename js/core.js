@@ -1070,7 +1070,7 @@
       case 'bus':
         return 'Divieto di transito per gli autobus. ' + evita;
       case 'tomtom':
-        return 'TomTom, che raccoglie i limiti con veicoli propri, evita questo tratto con le dimensioni del tuo mezzo ma lo percorre con un\'auto: probabilmente c\'è un limite che OpenStreetMap non riporta (ponte basso, strettoia, divieto). Controlla con Street View; se è confermato, ' + evita.charAt(0).toLowerCase() + evita.slice(1);
+        return 'TomTom, che raccoglie i limiti con veicoli propri, evita questo tratto con le dimensioni del tuo mezzo ma lo percorre con un\'auto: potrebbe esserci un limite che OpenStreetMap non riporta (ponte basso, strettoia, divieto), ma la scelta di TomTom può dipendere anche da altro. Controlla con Street View; se il limite c\'è, ' + evita.charAt(0).toLowerCase() + evita.slice(1);
       case 'pesanti':
         return 'Su OpenStreetMap questo divieto si usa di solito per il cartello con il camion, che vale per i veicoli che trasportano merci e non per gli autobus. Se sul cartello c\'è solo il camion, il bus può passare; se c\'è un limite di peso o il simbolo dell\'autobus, no. Controlla il cartello con Street View.';
       case 'orario': {
@@ -1198,8 +1198,9 @@
   /* ordine dei punti: prima quelli sul percorso, poi i non transitabili, poi per posizione */
   /* prima i punti sul percorso, poi quelli vicini, in fondo i divieti a orario non in vigore al passaggio */
   const SEV_RANK = { red: 0, amber: 1, info: 2 };
+  const groupOf = (h) => (h.rel === 'escluso' ? 3 : h.severity === 'info' ? 2 : h.rel === 'vicino' ? 1 : 0);
   function hazardOrder(a, b) {
-    const ga = a.severity === 'info' ? 2 : a.rel === 'vicino' ? 1 : 0, gb = b.severity === 'info' ? 2 : b.rel === 'vicino' ? 1 : 0;
+    const ga = groupOf(a), gb = groupOf(b);
     if (ga !== gb) return ga - gb;
     if (a.severity !== b.severity) return (SEV_RANK[a.severity] || 0) - (SEV_RANK[b.severity] || 0);
     return a.alongStart - b.alongStart;
@@ -1269,11 +1270,35 @@
         }
       } else continue;
 
+      // strade percorse riconosciute per identificativo (Valhalla): dicono con certezza se il limite è sulla
+      // strada percorsa, su un'altra che le si sovrappone sulla mappa, o sotto/sopra un ponte o una galleria
+      let reason = null, excluded = null;
+      const rw = opts.routeWays;
+      const mid = (rel.alongStart + rel.alongEnd) / 2;
+      const covered = !!(rw && rw.size && rel.onRoute && rw.covers(mid));
+      if (covered) {
+        const level = rw.levelAt(rel.alongStart, rel.alongEnd); // il percorso qui è su un ponte o in galleria
+        const elLevel = (tags.bridge && tags.bridge !== 'no') || (tags.tunnel && tags.tunnel !== 'no');
+        if (el.type === 'way') {
+          if (rw.has(el.id)) { rel.vicino = false; reason = 'id'; }
+          else if (level && !elLevel) excluded = 'livello';
+          else { rel.vicino = true; reason = 'altra-strada'; }
+        } else if (level && !elLevel && (tags.maxheight != null || tags['maxheight:physical'] != null || tags.maxwidth != null || tags['maxwidth:physical'] != null)) {
+          rel.vicino = true; reason = 'ponte';
+        }
+      }
+
       // "vicino" ma con lo stesso nome o sigla della strada percorsa: è sul percorso
       let promoted = null;
-      if (rel.onRoute && rel.vicino && opts.streetAt && sameRoad(tags, opts.streetAt((rel.alongStart + rel.alongEnd) / 2))) {
+      if (!covered && rel.onRoute && rel.vicino && opts.streetAt && sameRoad(tags, opts.streetAt(mid))) {
         rel.vicino = false;
         promoted = 'nome';
+      }
+      // senza strade riconosciute: una stradina di servizio senza nome che sulla mappa coincide con una strada
+      // con un nome (es. il corsello di un parcheggio sotto un viadotto) è solo "forse" sul percorso
+      if (!covered && rel.onRoute && !rel.vicino && el.type === 'way' && /^(service|track)$/.test(tags.highway || '') && !tags.name && !tags.ref && opts.streetAt && opts.streetAt(mid)) {
+        rel.vicino = true;
+        reason = 'servizio';
       }
 
       let issues;
@@ -1282,9 +1307,9 @@
         issues = ci.timed ? ci.fixed.concat([ci.timed]) : ci.fixed;
       } else issues = evaluateTags(tags, veh);
       if (rel.onRoute) {
-        if (!rel.vicino) checked++;
+        if (!rel.vicino && !excluded) checked++;
         for (const is of issues) raw.push(Object.assign({}, is, {
-          rel: rel.vicino ? 'vicino' : 'certo', distM: rel.minDist, promoted,
+          rel: excluded ? 'escluso' : rel.vicino ? 'vicino' : 'certo', distM: rel.minDist, promoted, reason, excluded,
           road: { bridge: tags.bridge || null, tunnel: tags.tunnel || null, layer: tags.layer || null },
           ids: [el.type + '/' + el.id], name: tags.name || tags.ref || '', meta: osmMeta(el, is.kind),
           alongStart: rel.alongStart, alongEnd: rel.alongEnd,
@@ -1683,6 +1708,28 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* Strade percorse, riconosciute per identificativo                    */
+  /* ------------------------------------------------------------------ */
+  /*
+   * runs: [{ a, b, id, bridge, tunnel }], a e b in metri dalla partenza.
+   *   has(id)        la via OSM è tra quelle percorse
+   *   covers(along)  in quel punto le strade sono state riconosciute (un tratto può mancare)
+   *   levelAt(a, b)  tra a e b il percorso passa su un ponte o in galleria
+   */
+  function makeRouteWays(runs) {
+    const list = (runs || []).filter((x) => x && isFinite(x.a) && isFinite(x.b))
+      .map((x) => ({ a: Math.min(x.a, x.b), b: Math.max(x.a, x.b), id: Number(x.id), bridge: !!x.bridge, tunnel: !!x.tunnel }))
+      .sort((p, q) => p.a - q.a);
+    const ids = new Set(list.map((x) => x.id));
+    return {
+      size: list.length,
+      has: (id) => ids.has(Number(id)),
+      covers: (al) => list.some((x) => al >= x.a - 40 && al <= x.b + 40),
+      levelAt: (a0, a1) => list.some((x) => x.b >= a0 - 5 && x.a <= a1 + 5 && (x.bridge || x.tunnel)),
+    };
+  }
+
+  /* ------------------------------------------------------------------ */
   /* Alternative: punti da evitare, tratto a piedi                       */
   /* ------------------------------------------------------------------ */
   const AVOID_NEAR_STOP = 150; // un punto critico attaccato a una tappa non si evita cambiando strada
@@ -1862,6 +1909,6 @@
     planTrip, fmtDur, fmtDist, fmtClock, fmtNum, stopLetter, parseCoords,
     buildGpx, encodeShare, decodeShare, normName, matchPermit, groupPermits,
     tileKey, tilesAround, tilesForCoords, pointInRings, coordsCovered, tileToElements,
-    PARK_NEAR, PARK_FAR, ringArea, parkingKind, pickParkings, nearOfficial, blockersNear, avoidPoints, mergeAvoid, walkEstimate,
+    PARK_NEAR, PARK_FAR, ringArea, parkingKind, pickParkings, nearOfficial, blockersNear, makeRouteWays, avoidPoints, mergeAvoid, walkEstimate,
   };
 });
