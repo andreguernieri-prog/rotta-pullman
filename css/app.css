@@ -476,6 +476,17 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 .pm-source { color: var(--muted); font-size: 12.5px; }
 .tl-body .tl-permit { display: block; margin-top: 2px; color: var(--amber); font-weight: 600; font-size: 13px; }
 .tl-body .tl-permit.limitato { color: var(--red); }
+/* ZTL e zone a basse emissioni */
+.hz.zt { grid-template-columns: 36px 1fr; }
+.zt-icon { width: 36px; height: 36px; display: grid; place-items: center; }
+.zt-sign { width: 34px; height: 34px; box-sizing: border-box; border-radius: 50%; background: #fff; border: 4px solid #c8102e; display: grid; place-items: center; color: #1a1a1a; font: 700 11px/1 'Barlow Condensed', 'Arial Narrow', sans-serif; letter-spacing: .02em; }
+.zt-sign.lez { font-size: 10px; }
+.zt-icon.info .zt-sign { opacity: .55; }
+.zt-marker { width: 30px; height: 30px; border-radius: 50%; box-shadow: 0 1px 4px rgba(0,0,0,.45); }
+.zt-marker .zt-sign { width: 30px; height: 30px; border-width: 4px; font-size: 10px; }
+.zt-marker.info { opacity: .75; }
+.chip-ztl { appearance: none; cursor: pointer; background: var(--amber-soft); color: var(--amber); border-color: transparent; font-family: inherit; }
+.chip-ztl.red { background: var(--red-soft); color: var(--red); }
 .chip-permit { appearance: none; cursor: pointer; background: var(--amber-soft); color: var(--amber); border-color: transparent; font-family: inherit; }
 .steps-wrap summary { cursor: pointer; font: 600 19px/1.15 var(--font-display); }
 .steps { list-style: none; margin: 0; padding: 0; }

@@ -35,7 +35,7 @@ function serve() {
 
 /* ---------------- servizi simulati ---------------- */
 const VIA_A1 = [[45.4860, 9.2044], [45.40, 9.33], [45.31, 9.50], [45.05, 9.70], [44.80, 10.33], [44.65, 10.93], [44.50, 11.34], [44.25, 11.30], [43.95, 11.20], [43.7629, 11.2650]];
-const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null, tomtomUrls: [], vicino: false, orario: false, dateTimes: [], parkNoBus: false, blockDest: false, unreachableDest: false, honorExclude: false, fixedCoords: null, valhallaBodies: [], viaduct: false, traceFail: false, traceCalls: 0, traffic: false, incidentCalls: 0, places: false, unreachablePlace: null, matrixCalls: 0 };
+const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null, tomtomUrls: [], vicino: false, orario: false, dateTimes: [], parkNoBus: false, blockDest: false, unreachableDest: false, honorExclude: false, fixedCoords: null, valhallaBodies: [], viaduct: false, traceFail: false, traceCalls: 0, traffic: false, incidentCalls: 0, places: false, unreachablePlace: null, matrixCalls: 0, ztl: false, senzaLimiti: false };
 
 function densify(pts, step) {
   const out = [];
@@ -189,7 +189,7 @@ function mockOverpass(data) {
   const c = mocks.fixedCoords || mocks.lastCoords;
   if (!c) return { elements: [] }; // richiesta rimasta in sospeso da uno scenario già chiuso
   const sv = (frac, m, id, name) => Object.assign({ type: 'way', id, tags: { highway: 'services', name } }, { center: offsetPoint(c, frac, m) });
-  return {
+  const out = {
     elements: [
       wayOn(c, 0.2, 4, 101, { highway: 'primary', maxheight: '5' }),
       Object.assign(wayOn(c, 0.35, 4, 102, { highway: 'primary', maxheight: '3.5', name: 'Sottopasso ferroviario', tunnel: 'yes', 'source:maxheight': 'sign' }), { timestamp: '2014-05-02T10:00:00Z', version: 3 }),
@@ -202,6 +202,9 @@ function mockOverpass(data) {
       .concat(mocks.orario ? [wayOn(c, 0.7, 4, 105, { highway: 'secondary', name: 'Via del Mercato', 'bus:conditional': 'no @ (Mo-Fr)' })] : [])
       .concat(mocks.vicino ? [Object.assign({ type: 'node', id: 7001, tags: { maxheight: '3.2', barrier: 'height_restrictor' } }, (() => { const q = offsetPoint(c, 0.45, 4); return { lat: q.lat, lon: q.lon }; })())] : []),
   };
+  // percorso senza limiti: solo le aree di servizio
+  if (mocks.senzaLimiti) out.elements = out.elements.filter((e) => /^(services|rest_area)$/.test(e.tags.highway || ''));
+  return out;
 }
 
 function photonFeature(name, city, lat, lon, extra) {
@@ -275,7 +278,18 @@ function mockDati() {
       pt(0.45, 2000, 9604, { tourism: 'museum', name: 'Museo minore' }),
     ];
   }
-  const els = mockOverpass('corridoio').elements.concat(block, luoghi, [
+  let zone = [];
+  if (mocks.ztl) {
+    // ZTL sempre attiva a metà del percorso più veloce, e una ZTL intorno all'arrivo
+    const cz = mocks.fixedCoords || c;
+    const sq = (lat, lon, m) => { const d = m / 110540, e = m / (111320 * Math.cos(lat * Math.PI / 180)); return [[lat - d, lon - e], [lat - d, lon + e], [lat + d, lon + e], [lat + d, lon - e], [lat - d, lon - e]].map(([a, b]) => ({ lat: a, lon: b })); };
+    const mid = cz[Math.floor(cz.length * 0.5)], end = cz[cz.length - 1];
+    zone = [
+      { type: 'way', id: 9700, tags: { boundary: 'limited_traffic_zone', name: 'ZTL di Prova', motor_vehicle: 'permit', website: 'https://comune.example/ztl' }, geometry: sq(mid[0], mid[1], 800) },
+      { type: 'relation', id: 9701, tags: { boundary: 'limited_traffic_zone', name: 'ZTL Centro', vehicle: 'yes', 'vehicle:conditional': 'permit @ (00:00-24:00)' }, geometry: sq(end[0], end[1], 400) },
+    ];
+  }
+  const els = mockOverpass('corridoio').elements.concat(block, luoghi, zone, [
     { type: 'way', id: 9300, center: { lat: dest[0] + 0.002, lon: dest[1] + 0.002 }, tags: { amenity: 'parking', bus: 'designated', name: 'Parcheggio bus turistici', fee: 'yes' } },
     { type: 'node', id: 9301, lat: dest[0] - 0.008, lon: dest[1] + 0.001, tags: { amenity: 'parking', hgv: 'yes' } },
     { type: 'node', id: 9302, lat: dest[0] + 0.012, lon: dest[1], tags: { amenity: 'parking', bus: 'yes', name: 'Parcheggio troppo lontano' } },
@@ -336,6 +350,12 @@ async function mockRoute(route) {
       const built = mocks.dati ? mockDati() : null;
       if (!built) return route.fulfill({ status: 404, contentType: 'text/plain', headers: { 'Access-Control-Allow-Origin': '*' }, body: '404: Not Found' });
       if (/\/index\.json/.test(url)) return json(built.index);
+      const mz = url.match(/zone\/(-?\d+_-?\d+)\.json/);
+      if (mz) {
+        const z = built.zones && built.zones.get(mz[1]);
+        if (!z) return route.fulfill({ status: 404, contentType: 'text/plain', headers: { 'Access-Control-Allow-Origin': '*' }, body: '404: Not Found' });
+        return json({ v: 1, k: mz[1], z });
+      }
       const ml = url.match(/luoghi\/(-?\d+_-?\d+)\.json/);
       if (ml) {
         const l = built.places && built.places.get(ml[1]);
@@ -1085,6 +1105,54 @@ async function mockRoute(route) {
     });
     Object.assign(mocks, { dati: false, places: false, unreachablePlace: null });
     await lctx.close();
+  }
+
+  /* --- ZTL e zone a traffico limitato --- */
+  {
+    const zctx = await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: 'it-IT', timezoneId: 'Europe/Rome' });
+    await setupRoutes(zctx);
+    Object.assign(mocks, { dati: true, ztl: true, senzaLimiti: true, lastCoords: null, fixedCoords: null, honorExclude: false });
+    const q = await zctx.newPage();
+    watch(q, 'ztl');
+    await q.goto(base);
+    const ztlDone = () => window.__rp.state.ztl && window.__rp.state.ztl.status === 'done' && window.__rp.state.ztl.route === window.__rp.state.route;
+    await q.waitForFunction(ztlDone, null, { timeout: 30000 });
+    await q.waitForFunction(() => window.__rp.state.analysis && window.__rp.state.analysis.status === 'done', null, { timeout: 30000 });
+    await step('ZTL: zona attraversata e arrivo dentro la ZTL, con orari, fermata al confine e alternativa', async () => {
+      const txt = await q.textContent('#ztl');
+      assert.match(txt, /ZTL di Prova.*Sempre attiva.*Il percorso la attraversa per [\d,.]+ km · km \d+.*Regola: solo con permesso\..*Cosa fare: Senza permesso il pullman non può attraversarla/s);
+      assert.match(txt, /ZTL Centro.*Attiva al tuo passaggio.*Arrivo «.*» dentro la zona.*Regola: solo con permesso 00:00–24:00/s);
+      assert.match(await q.textContent('#ztl-count'), /^2$/);
+      assert.match(await q.textContent('#sum-chips'), /2 ZTL sul percorso/);
+      assert.match(await q.textContent('#check-banner'), /ZTL e zone a traffico limitato: 1 zona attraversata, 1 tappa dentro una zona, 2 attive al tuo passaggio/);
+      assert.equal(await q.locator('.zt-marker').count(), 2);
+      assert.match(await q.getAttribute('#ztl a:has-text("Sito della zona")', 'href'), /comune\.example/);
+      await q.locator('#ztl-sec').scrollIntoViewIfNeeded();
+      await q.locator('#ztl .hz.zt', { hasText: 'ZTL Centro' }).locator('button', { hasText: 'Mostra sulla mappa' }).click();
+      await q.waitForTimeout(700);
+      await q.screenshot({ path: path.join(OUT, '22-ztl.png') });
+      // l'arrivo è dentro la ZTL: il pullman si ferma al confine e il gruppo prosegue a piedi
+      await q.locator('#ztl .hz.zt', { hasText: 'ZTL Centro' }).locator('button', { hasText: 'Fermati al confine' }).click();
+      await q.waitForFunction(() => /al confine della ZTL/.test(document.querySelector('#route-notes').textContent), null, { timeout: 30000 });
+      await q.waitForFunction(() => window.__rp.state.ztl.status === 'done' && /ZTL di Prova/.test(document.querySelector('#ztl').textContent) && !/ZTL Centro/.test(document.querySelector('#ztl').textContent), null, { timeout: 30000 });
+      assert.match(await q.textContent('#route-notes'), /Arrivo al confine della ZTL: «.*» è dentro «ZTL Centro».*Il pullman arriva al confine della zona.*a piedi/s);
+      assert.equal(await q.locator('.drop-marker').count(), 1);
+      // con il permesso si torna ad arrivare dentro la zona
+      await q.click('#route-notes button:has-text("Ho il permesso")');
+      await q.waitForFunction(() => window.__rp.state.ztl.status === 'done' && /ZTL Centro/.test(document.querySelector('#ztl').textContent), null, { timeout: 30000 });
+      assert.equal(await q.locator('.drop-marker').count(), 0);
+      // con un'alternativa disponibile la ZTL attraversata si evita da sola; quella dell'arrivo resta
+      mocks.honorExclude = true;
+      mocks.fixedCoords = null;
+      await q.click('#tab-viaggio');
+      await q.click('#btn-route');
+      await q.waitForFunction(() => /Percorso alternativo/.test(document.querySelector('#route-notes').textContent), null, { timeout: 40000 });
+      assert.match(await q.textContent('#route-notes'), /ZTL attiva al passaggio · ZTL di Prova/);
+      await q.waitForFunction(() => window.__rp.state.ztl.status === 'done' && window.__rp.state.ztl.route === window.__rp.state.route && !/ZTL di Prova/.test(document.querySelector('#ztl').textContent), null, { timeout: 30000 });
+      assert.match(await q.textContent('#ztl'), /ZTL Centro/);
+    });
+    Object.assign(mocks, { dati: false, ztl: false, senzaLimiti: false, honorExclude: false, fixedCoords: null });
+    await zctx.close();
   }
 
   /* --- tema scuro --- */

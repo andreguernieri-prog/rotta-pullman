@@ -1,5 +1,5 @@
 # Ogni settimana scarica la mappa OpenStreetMap dell'Italia, ne estrae i limiti utili ai bus
-# (compresi i divieti a giorni e orari) e i luoghi e attrazioni notevoli,
+# (compresi i divieti a giorni e orari), le ZTL, i luoghi e attrazioni notevoli,
 # le aree di servizio e i parcheggi per bus, e pubblica i riquadri sul ramo "dati".
 # L'app li legge da lì; per i tratti fuori Italia usa ancora Overpass.
 name: Dati dei limiti (Italia)
@@ -42,7 +42,7 @@ jobs:
           curl -fsSL --retry 3 -A "rotta-pullman (github.com/${GITHUB_REPOSITORY})" -o italia.poly https://download.geofabrik.de/europe/italy.poly
           ls -lh italia.osm.pbf italia.poly
 
-      - name: Estrai limiti, aree di servizio e parcheggi
+      - name: Estrai limiti, ZTL, aree di servizio e parcheggi
         run: |
           osmium tags-filter italia.osm.pbf \
             nw/maxheight nw/maxheight:physical nw/maxwidth nw/maxwidth:physical nw/maxlength \
@@ -56,6 +56,7 @@ jobs:
             nwr/tourism=attraction,museum,gallery,aquarium,viewpoint,theme_park,zoo \
             nwr/historic=castle,fort,palace,monument,archaeological_site,ruins,city_gate,tower,church,monastery,abbey \
             nwr/natural=waterfall,cave_entrance nwr/amenity=place_of_worship nwr/heritage \
+            nwr/boundary=limited_traffic_zone,low_emission_zone \
             -o filtrato.osm.pbf
           osmium export filtrato.osm.pbf -f geojsonseq -a type,id,timestamp,version -o filtrato.geojsonseq
           ls -lh filtrato.osm.pbf filtrato.geojsonseq

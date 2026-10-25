@@ -857,3 +857,68 @@ test('gestori dei tratti di autostrada percorsi, in ordine', () => {
   assert.deepEqual(ro[0].ops.map((o) => o.nome), ['Autostrade per l\'Italia', 'A4 Holding (Brescia–Verona–Vicenza–Padova)', 'Concessioni Autostradali Venete']);
   assert.deepEqual(C.routeOperators(null), []);
 });
+
+/* ZTL di prova: un quadrato di circa 1,1 × 1,6 km */
+const ztl = (tags) => C.zonesFromTile({ z: [['r1', [C.encodePolyline([[44.49, 11.33], [44.49, 11.35], [44.50, 11.35], [44.50, 11.33], [44.49, 11.33]], 5)], Object.assign({ boundary: 'limited_traffic_zone', name: 'ZTL di prova' }, tags)]] })[0];
+const ora = (s) => new Date(s).getTime();
+
+test('ZTL: regole e orari al passaggio del pullman', () => {
+  const veh = C.sanitizeVehicle({});
+  const fi = ztl({ vehicle: 'yes', 'vehicle:conditional': 'permit @ (Mo-Fr 07:30-20:00; Sa 07:00-16:00; Su,PH)' });
+  assert.equal(C.zoneWhen(fi), 'solo con permesso lun–ven 07:30–20:00; sab 07:00–16:00; dom, festivi');
+  assert.equal(C.zoneStatus(fi, veh, ora('2026-10-26T10:00:00')).state, 'attivo');
+  assert.equal(C.zoneStatus(fi, veh, ora('2026-10-26T21:30:00')).state, 'non attivo');
+  assert.equal(C.zoneStatus(fi, veh, ora('2026-10-26T20:20:00')).state, 'ridosso');
+  assert.equal(C.zoneStatus(fi, veh, ora('2026-10-25T21:00:00')).state, 'attivo', 'domenica tutto il giorno');
+  // Bologna: sempre con permesso, libera di notte
+  const bo = ztl({ motor_vehicle: 'permit', 'motor_vehicle:conditional': 'yes @ 20:00-07:00' });
+  assert.equal(C.zoneWhen(bo), 'solo con permesso; consentito 20:00–07:00');
+  assert.equal(C.zoneStatus(bo, veh, ora('2026-10-26T10:00:00')).restr, 'permesso');
+  assert.equal(C.zoneStatus(bo, veh, ora('2026-10-26T23:00:00')).state, 'non attivo');
+  // Roma: regola scritta per le auto, vale anche per il pullman
+  const ro = ztl({ motorcar: 'yes', 'motorcar:conditional': 'private @ (Mo-Fr 06:30-18:00; Sa 14:00-18:00)' });
+  assert.equal(C.zoneStatus(ro, veh, ora('2026-10-26T10:00:00')).state, 'attivo');
+  assert.equal(C.zoneStatus(ro, veh, ora('2026-10-25T10:00:00')).state, 'non attivo');
+  // sempre attiva, senza regole, vietata, aperta ai bus
+  const vr = C.zoneStatus(ztl({ motorcar: 'permit' }), veh, ora('2026-10-26T10:00:00'));
+  assert.equal(vr.state, 'attivo'); assert.equal(vr.sempre, true);
+  assert.equal(C.zoneStatus(ztl({}), veh, ora('2026-10-26T10:00:00')).state, 'senza regole');
+  assert.equal(C.zoneStatus(ztl({ motor_vehicle: 'no' }), veh, null).restr, 'vietato');
+  const bus = C.zoneStatus(ztl({ bus: 'yes', motor_vehicle: 'no' }), veh, ora('2026-10-26T10:00:00'));
+  assert.equal(bus.state, 'non attivo'); assert.equal(bus.libera, true);
+  assert.equal(C.zoneStatus(ztl({ vehicle: 'yes', 'vehicle:conditional': 'permit @ (Mo-Fr 07:30-20:00)' }), veh, null).state, 'incerto');
+  // zona a basse emissioni: dipende dalla classe Euro, conta l'orario
+  const lez = ztl({ boundary: 'low_emission_zone', opening_hours: 'Mo-Fr 07:30-19:30; PH off' });
+  assert.equal(lez.kind, 'lez');
+  assert.equal(C.zoneStatus(lez, veh, ora('2026-10-26T10:00:00')).severity, 'amber');
+  assert.equal(C.zoneStatus(lez, veh, ora('2026-10-25T10:00:00')).severity, 'info');
+  assert.equal(C.zoneWhen(lez), 'in vigore lun–ven 07:30–19:30; esclusi i festivi');
+  assert.equal(C.zoneWebsite(ztl({ 'source:url': 'https://dati.example/ztl' })), 'https://dati.example/ztl');
+  assert.equal(C.zoneWebsite(ztl({ website: 'comune.example' })), null);
+});
+
+test('ZTL: attraversamenti del percorso, strada di confine, tappe dentro e punti da evitare', () => {
+  const z = ztl({ motor_vehicle: 'permit' });
+  // attraversa da ovest a est a metà altezza
+  const r1 = C.finishRoute({ coords: [[44.495, 11.32], [44.495, 11.36]], steps: [], legEnds: [0, 1], durationS: 300 });
+  const x1 = C.zoneCrossings([z], r1, [{ lat: 44.495, lon: 11.32 }, { lat: 44.495, lon: 11.36 }]);
+  assert.equal(x1.length, 1);
+  assert.deepEqual(x1[0].stops, []);
+  assert.ok(Math.abs(x1[0].lengthM - 1590) < 60, 'circa 1,6 km dentro la zona: ' + x1[0].lengthM);
+  assert.ok(Math.abs(x1[0].alongStart - 795) < 40);
+  // passa sulla strada di confine (a 5 m dal bordo): non entra
+  const r2 = C.finishRoute({ coords: [[44.49 + 5 / 110540, 11.32], [44.49 + 5 / 110540, 11.36]], steps: [], legEnds: [0, 1], durationS: 300 });
+  assert.equal(C.zoneCrossings([z], r2, []).length, 0);
+  // l'arrivo è dentro la zona
+  const r3 = C.finishRoute({ coords: [[44.495, 11.32], [44.495, 11.34]], steps: [], legEnds: [0, 1], durationS: 300 });
+  const x3 = C.zoneCrossings([z], r3, [{ lat: 44.495, lon: 11.32 }, { lat: 44.495, lon: 11.34 }]);
+  assert.deepEqual(x3[0].stops, [1]);
+  // si evita solo la ZTL attiva attraversata senza fermarsi dentro
+  const st = { state: 'attivo' };
+  const pts = C.zoneAvoidPoints([Object.assign({ st }, x1[0])], r1, []);
+  assert.equal(pts.length, 1);
+  assert.ok(C.pointInRings(pts[0].lat, pts[0].lon, z.rings), 'il punto da evitare è dentro la zona');
+  assert.equal(pts[0].name, 'ZTL di prova');
+  assert.equal(C.zoneAvoidPoints([Object.assign({ st }, x3[0])], r3, []).length, 0, 'tappa dentro: non si evita');
+  assert.equal(C.zoneAvoidPoints([Object.assign({ st: { state: 'non attivo' } }, x1[0])], r1, []).length, 0);
+});

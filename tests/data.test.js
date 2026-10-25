@@ -194,3 +194,25 @@ test('dati: luoghi notevoli in riquadri da 0,5°, con Wikipedia, UNESCO, orari e
   assert.deepEqual([castello.name, castello.cat, castello.u], ['Castello', 'castello', 1]);
   assert.equal(index.luoghi[k], 1);
 });
+
+test('dati: ZTL e zone a basse emissioni in riquadri da 0,5°, con regole e sito', () => {
+  const b = D.createBuilder();
+  const ring = [[44.49, 11.33], [44.49, 11.36], [44.51, 11.36], [44.51, 11.33], [44.49, 11.33]];
+  b.add(poly(1, ring, { boundary: 'limited_traffic_zone', name: 'ZTL Centro Storico', motor_vehicle: 'permit', 'motor_vehicle:conditional': 'yes @ 20:00-07:00', website: 'https://comune.example/ztl', highway: 'pedestrian' }));
+  b.add(poly(1, ring, { boundary: 'limited_traffic_zone', name: 'doppione' }));
+  // via chiusa esportata come linea, a cavallo di due riquadri
+  b.add(line('way', 2, [[44.99, 7.6], [44.99, 7.7], [45.01, 7.7], [45.01, 7.6], [44.99, 7.6]], { boundary: 'low_emission_zone', name: 'Zona verde', opening_hours: 'Mo-Fr 08:00-19:00' }));
+  b.add(line('way', 3, [[44.0, 10.0], [44.1, 10.1]], { boundary: 'limited_traffic_zone', name: 'linea aperta' }));
+  const { index, zones } = b.finish({ generato: 'x' });
+  assert.equal(index.riquadroZone, 0.5);
+  assert.equal(b.stats.zone, 2);
+  assert.deepEqual(Object.keys(index.zone).sort(), ['88_22', '89_15', '89_22', '90_15']);
+  const z = C.zonesFromTile({ z: zones.get('88_22') });
+  assert.equal(z.length, 1);
+  assert.equal(z[0].name, 'ZTL Centro Storico');
+  assert.equal(z[0].kind, 'ztl');
+  assert.equal(z[0].tags['motor_vehicle:conditional'], 'yes @ 20:00-07:00');
+  assert.equal(z[0].tags.highway, undefined, 'solo i tag utili');
+  assert.ok(C.pointInRings(44.5, 11.345, z[0].rings));
+  assert.equal(C.zonesFromTile({ z: zones.get('89_15') })[0].kind, 'lez');
+});

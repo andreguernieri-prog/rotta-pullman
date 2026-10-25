@@ -8,6 +8,8 @@
  *           <cartella>/riquadri/<k>.json un file per riquadro di 0,25° (circa 28 × 20 km)
  *           <cartella>/luoghi/<k>.json   luoghi e attrazioni notevoli, riquadri di 0,5° (circa 55 × 40 km):
  *                                         l: [rif, lat, lon, tipo, nome, { w: wikipedia, d: wikidata, u: UNESCO, o: orari, s: sito }]
+ *           <cartella>/zone/<k>.json     ZTL e zone a basse emissioni, riquadri di 0,5°:
+ *                                         z: [rif, [anelli esterni (polyline 5)], tag]
  *
  * Ogni riquadro contiene, in forma compatta:
  *   r: limiti utili ai bus  [rif, geometria (polyline 5), tag]
@@ -26,6 +28,7 @@ const C = require('../js/core.js');
 const VERSIONE = 1;
 const RIQUADRO = 0.25;
 const RIQUADRO_LUOGHI = 0.5;
+const RIQUADRO_ZONE = 0.5;
 
 const RESTR_KEYS = ['maxheight', 'maxheight:physical', 'maxwidth', 'maxwidth:physical', 'maxlength', 'maxweight', 'maxweightrating', 'maxaxleload'];
 const ACCESS_KEYS = ['hgv', 'bus', 'tourist_bus', 'coach'];
@@ -35,6 +38,10 @@ const KEEP_R = RESTR_KEYS.concat(ACCESS_KEYS, COND_TAGS, ['motor_vehicle', 'vehi
   'source', 'source:maxheight', 'source:maxweight', 'source:maxwidth', 'source:maxlength', 'source:hgv',
   'check_date', 'check_date:maxheight', 'check_date:maxweight', 'survey:date']);
 const KEEP_P = ['name', 'fee', 'capacity', 'capacity:bus', 'capacity:coach', 'access', 'opening_hours', 'bus', 'coach', 'tourist_bus', 'hgv', 'parking', 'maxheight', 'surface', 'operator'];
+// ZTL e zone a basse emissioni: nome, regole di accesso (anche a orario), sito del comune
+const ZONE_ACCESS = ['tourist_bus', 'coach', 'bus', 'motor_vehicle', 'vehicle', 'motorcar', 'access', 'hgv', 'psv'];
+const KEEP_Z = ['name', 'name:it', 'short_name', 'alt_name:it', 'boundary', 'opening_hours', 'website', 'contact:website', 'url', 'source:url', 'operator', 'description', 'fee', 'charge', 'check_date']
+  .concat(ZONE_ACCESS, ZONE_ACCESS.map((k) => k + ':conditional'));
 const NON_ROAD = ['amenity', 'shop', 'building', 'tourism', 'leisure', 'man_made', 'office', 'craft'];
 
 /* Un valore di limite può riguardare un bus? Il più alto supera di poco i 4 m, il più pesante le 30 t */
@@ -122,22 +129,37 @@ function centroid(g) {
   return [la / pts.length, lo / pts.length];
 }
 
-function tilesOfBox(pts) {
+function tilesOfBox(pts, size) {
+  const sz = size || RIQUADRO;
   let a0 = Infinity, o0 = Infinity, a1 = -Infinity, o1 = -Infinity;
   for (const p of pts) { a0 = Math.min(a0, p[0]); a1 = Math.max(a1, p[0]); o0 = Math.min(o0, p[1]); o1 = Math.max(o1, p[1]); }
   const out = [];
-  for (let y = Math.floor(a0 / RIQUADRO); y <= Math.floor(a1 / RIQUADRO); y++) {
-    for (let x = Math.floor(o0 / RIQUADRO); x <= Math.floor(o1 / RIQUADRO); x++) out.push(y + '_' + x);
+  for (let y = Math.floor(a0 / sz); y <= Math.floor(a1 / sz); y++) {
+    for (let x = Math.floor(o0 / sz); x <= Math.floor(o1 / sz); x++) out.push(y + '_' + x);
   }
   return out;
+}
+
+/* anelli esterni di un'area GeoJSON, come [[lat, lon], ...] */
+function outerRings(g) {
+  if (!g) return [];
+  const ll = (r) => r.map((c) => [c[1], c[0]]);
+  if (g.type === 'Polygon') return g.coordinates[0] ? [ll(g.coordinates[0])] : [];
+  if (g.type === 'MultiPolygon') return g.coordinates.filter((p) => p[0]).map((p) => ll(p[0]));
+  if (g.type === 'LineString' && g.coordinates.length > 3) {
+    const a = g.coordinates[0], b = g.coordinates[g.coordinates.length - 1];
+    if (a[0] === b[0] && a[1] === b[1]) return [ll(g.coordinates)];
+  }
+  return [];
 }
 
 /* Raccoglie gli elementi e li divide in riquadri */
 function createBuilder() {
   const tiles = new Map();
   const places = new Map();
+  const zones = new Map();
   const seen = new Set();
-  const stats = { limiti: 0, aree: 0, parcheggi: 0, generici: 0, luoghi: 0, scartati: 0 };
+  const stats = { limiti: 0, aree: 0, parcheggi: 0, generici: 0, luoghi: 0, zone: 0, scartati: 0 };
   const get = (k) => {
     let t = tiles.get(k);
     if (!t) { t = { r: [], s: [], p: [] }; tiles.set(k, t); }
@@ -152,6 +174,24 @@ function createBuilder() {
     const t = {};
     for (const k of Object.keys(pr)) if (k[0] !== '@') t[k] = pr[k];
     const ref = (type === 'node' ? 'n' : type === 'way' ? 'w' : 'r') + id;
+
+    // ZTL e zone a basse emissioni
+    if (t.boundary === 'limited_traffic_zone' || t.boundary === 'low_emission_zone') {
+      if (seen.has('z' + ref)) return;
+      const rings = outerRings(feature.geometry).filter((r) => r.length > 3);
+      if (!rings.length) { stats.scartati++; return; }
+      seen.add('z' + ref);
+      const tags = pick(t, KEEP_Z);
+      const d = isoDay(pr['@timestamp']);
+      if (d) tags._d = d;
+      const rec = [ref, rings.map((r) => C.encodePolyline(r.length > 5 ? C.simplify(r, 3) : r, 5)), tags];
+      for (const k of tilesOfBox([].concat(...rings), RIQUADRO_ZONE)) {
+        if (!zones.has(k)) zones.set(k, []);
+        zones.get(k).push(rec);
+      }
+      stats.zone++;
+      return;
+    }
 
     // luoghi e attrazioni notevoli
     const pk = C.placeKind(t);
@@ -224,10 +264,12 @@ function createBuilder() {
       fonte: meta.fonte || 'OpenStreetMap',
       riquadro: RIQUADRO,
       riquadroLuoghi: RIQUADRO_LUOGHI,
+      riquadroZone: RIQUADRO_ZONE,
       copertura: meta.copertura || null,
       conteggi: stats,
       riquadri: {},
       luoghi: {},
+      zone: {},
     };
     const keys = Array.from(tiles.keys()).sort();
     for (const k of keys) {
@@ -235,7 +277,8 @@ function createBuilder() {
       index.riquadri[k] = t.r.length + t.s.length + t.p.length;
     }
     for (const k of Array.from(places.keys()).sort()) index.luoghi[k] = places.get(k).length;
-    return { index, tiles, places };
+    for (const k of Array.from(zones.keys()).sort()) index.zone[k] = zones.get(k).length;
+    return { index, tiles, places, zones };
   }
 
   return { add, finish, stats };
@@ -282,7 +325,7 @@ async function main(argv) {
     try { b.add(JSON.parse(line)); } catch (e) { /* riga non valida: si salta */ }
   }
   const copertura = polyPath ? parsePoly(fs.readFileSync(polyPath, 'utf8'), 300) : null;
-  const { index, tiles, places } = b.finish({ generato: new Date().toISOString(), datiOsm: osmDate, fonte: 'OpenStreetMap, estrazione Geofabrik Italia', copertura });
+  const { index, tiles, places, zones } = b.finish({ generato: new Date().toISOString(), datiOsm: osmDate, fonte: 'OpenStreetMap, estrazione Geofabrik Italia', copertura });
 
   fs.mkdirSync(path.join(outDir, 'riquadri'), { recursive: true });
   let bytes = 0, max = 0, maxKey = '';
@@ -300,6 +343,14 @@ async function main(argv) {
     pbytes += body.length;
   }
   console.log(`Luoghi: ${b.stats.luoghi} in ${places.size} riquadri · ${(pbytes / 1048576).toFixed(1)} MB`);
+  fs.mkdirSync(path.join(outDir, 'zone'), { recursive: true });
+  let zbytes = 0;
+  for (const [k, z] of zones) {
+    const body = JSON.stringify({ v: VERSIONE, k, z });
+    fs.writeFileSync(path.join(outDir, 'zone', k + '.json'), body);
+    zbytes += body.length;
+  }
+  console.log(`ZTL e zone a basse emissioni: ${b.stats.zone} in ${zones.size} riquadri · ${(zbytes / 1024).toFixed(0)} KB`);
   fs.writeFileSync(path.join(outDir, 'index.json'), JSON.stringify(index));
   console.log(`Elementi letti: ${n}`);
   console.log(`Limiti: ${b.stats.limiti} · aree di servizio: ${b.stats.aree} · parcheggi bus: ${b.stats.parcheggi} · parcheggi grandi generici: ${b.stats.generici} · scartati: ${b.stats.scartati}`);
@@ -311,4 +362,4 @@ if (require.main === module) {
   main(process.argv).catch((e) => { console.error(e); process.exit(1); });
 }
 
-module.exports = { createBuilder, parsePoly, relevantRestriction, isBusParking, areaOf, isoDay, RIQUADRO, RIQUADRO_LUOGHI, VERSIONE };
+module.exports = { createBuilder, parsePoly, relevantRestriction, isBusParking, areaOf, isoDay, outerRings, RIQUADRO, RIQUADRO_LUOGHI, RIQUADRO_ZONE, VERSIONE };

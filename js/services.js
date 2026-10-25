@@ -521,6 +521,14 @@ out body geom;`;
     return out;
   }
 
+  /* riquadri delle ZTL e zone a basse emissioni (cartella zone/) */
+  async function dataZones(index, keys, signal) {
+    const wanted = keys.filter((k) => index.zone && index.zone[k]);
+    const out = [];
+    for (const k of wanted) out.push(await dataTile(index, k, signal, 'zone'));
+    return out;
+  }
+
   /*
    * Tempi di andata in pullman (Valhalla sources_to_targets, con le misure del mezzo): times[i][j] in secondi
    * dalla sorgente i alla destinazione j, null se il mezzo non ci arriva. Le destinazioni hanno un raggio di
@@ -688,5 +696,5 @@ out body geom;`;
     return { image: list[0] || null, signs };
   }
 
-  root.RPServices = { URLS, ServiceError, geocode, geocodeFallback, reverse, routeValhalla, routeOrs, corridor, corridorQuery, parkings, valhallaBody, comuneAt, sleep, dataIndex, dataTiles, dataPlaces, valhallaMatrix, wikiSummary, tomtomRoute, tomtomIncidents, mapillaryNear, traceWays };
+  root.RPServices = { URLS, ServiceError, geocode, geocodeFallback, reverse, routeValhalla, routeOrs, corridor, corridorQuery, parkings, valhallaBody, comuneAt, sleep, dataIndex, dataTiles, dataPlaces, dataZones, valhallaMatrix, wikiSummary, tomtomRoute, tomtomIncidents, mapillaryNear, traceWays };
 })(typeof self !== 'undefined' ? self : this);

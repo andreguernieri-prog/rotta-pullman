@@ -2278,6 +2278,192 @@
     return out;
   }
 
+  /* ------------------------------------------------------------------ */
+  /* ZTL e zone a basse emissioni (OSM boundary=limited_traffic_zone,    */
+  /* boundary=low_emission_zone)                                         */
+  /* ------------------------------------------------------------------ */
+  // chiave che decide per un bus turistico; anche "motorcar", perché molte ZTL sono mappate solo per le auto
+  const ZONE_KEYS = ['tourist_bus', 'coach', 'bus', 'motor_vehicle', 'vehicle', 'motorcar', 'access'];
+  const ZONE_DEPTH = 15; // metri: chi passa sulla strada di confine non entra nella zona
+  const ZONE_GAP = 60;   // metri: due tratti dentro la stessa zona così vicini sono un solo attraversamento
+
+  function zoneName(t) {
+    return String(t['name:it'] || t.name || t.short_name || '').trim() || (t.boundary === 'low_emission_zone' ? 'Zona a basse emissioni' : 'Zona a traffico limitato');
+  }
+
+  /* riquadro delle zone → [{ id, kind: 'ztl' | 'lez', name, rings, box: [sud, ovest, nord, est], tags }] */
+  function zonesFromTile(tile) {
+    const out = [];
+    for (const [ref, enc, tags] of (tile && tile.z) || []) {
+      const rings = (enc || []).map((e) => decodePolyline(e, 5)).filter((r) => r.length > 2);
+      if (!rings.length) continue;
+      let s = 90, w = 180, n = -90, e = -180;
+      for (const r of rings) for (const p of r) { s = Math.min(s, p[0]); n = Math.max(n, p[0]); w = Math.min(w, p[1]); e = Math.max(e, p[1]); }
+      const t = tags || {};
+      out.push({ id: ref, kind: t.boundary === 'low_emission_zone' ? 'lez' : 'ztl', name: zoneName(t), rings, box: [s, w, n, e], tags: t });
+    }
+    return out;
+  }
+
+  /* regola di accesso della zona per un bus: la chiave più specifica presente */
+  function zoneRule(tags) {
+    for (const k of ZONE_KEYS) {
+      const base = tags[k] != null && tags[k] !== '' ? String(tags[k]) : null;
+      const raw = tags[k + ':conditional'];
+      if (base == null && raw == null) continue;
+      return { key: k, base, raw: raw == null ? null : String(raw), rules: raw == null ? [] : parseConditional(raw) };
+    }
+    return null;
+  }
+
+  /* valore della regola in un momento: { value, unknown } (fuori dagli orari indicati la zona è libera) */
+  function zoneValueAt(rule, veh, d) {
+    let val = null, unk = false;
+    for (const r of rule.rules || []) {
+      let st = true;
+      for (const c of r.conds) {
+        st = and3(st, c.type === 'veicolo' ? vehCond(c, veh) : c.type === 'gruppo' ? groupCond(c) : c.type === 'orario' && d ? ohAt(c.oh, d) : '?');
+      }
+      if (st === true) { val = r.value; unk = false; } else if (st === '?') unk = true;
+    }
+    return { value: val != null ? val : rule.base != null ? rule.base : 'yes', unknown: unk };
+  }
+  function zoneRestriction(v) { return v === 'no' ? 'vietato' : RESERVED[v] ? 'permesso' : null; }
+
+  /*
+   * Stato della zona quando passa il pullman (ms):
+   * 'attivo' | 'ridosso' (entro un'ora) | 'non attivo' | 'incerto' | 'senza regole' | 'lez' (zona a basse emissioni)
+   */
+  function zoneStatus(zone, veh, ms) {
+    const d = ms != null ? new Date(ms) : null;
+    if (zone.kind === 'lez') {
+      const oh = zone.tags.opening_hours ? parseOH(String(zone.tags.opening_hours)) : null;
+      const active = oh && d ? ohAt(oh, d) : '?';
+      return { state: 'lez', severity: active === false ? 'info' : 'amber', active };
+    }
+    const rule = zoneRule(zone.tags);
+    if (!rule) return { state: 'senza regole', severity: 'amber' };
+    if (!rule.rules) return { state: 'incerto', severity: 'amber' };
+    const timed = rule.rules.some((r) => r.conds.some((c) => c.type !== 'veicolo' && !(c.type === 'gruppo' && groupCond(c) !== '?')));
+    const at = (t) => { const x = zoneValueAt(rule, veh, t == null ? null : new Date(t)); return { restr: zoneRestriction(x.value), unknown: x.unknown }; };
+    if (!timed) {
+      const x = at(ms);
+      return x.restr ? { state: 'attivo', severity: 'red', restr: x.restr, sempre: true } : { state: 'non attivo', severity: 'info', libera: true };
+    }
+    if (ms == null) return { state: 'incerto', severity: 'amber' };
+    const now = at(ms);
+    if (now.restr) return { state: 'attivo', severity: 'red', restr: now.restr };
+    if (now.unknown) return { state: 'incerto', severity: 'amber' };
+    for (let k = 1; k <= 6; k++) {
+      for (const s of [1, -1]) {
+        const x = at(ms + s * k * 10 * 60e3);
+        if (x.restr) return { state: 'ridosso', severity: 'amber', minutes: k * 10, after: s > 0, restr: x.restr };
+      }
+    }
+    return { state: 'non attivo', severity: 'info' };
+  }
+
+  /* orari e regola della zona in italiano: "solo con permesso lun–ven 07:30–20:00; sab 07:00–16:00" */
+  function zoneWhen(zone) {
+    const t = zone.tags;
+    if (zone.kind === 'lez') return t.opening_hours ? 'in vigore ' + condText(String(t.opening_hours)) : '';
+    const rule = zoneRule(t);
+    if (!rule) return '';
+    if (!rule.rules) return rule.raw;
+    const parts = [];
+    if ((rule.base != null && !YES.test(rule.base)) || !rule.rules.length) parts.push(valueText(rule.key, rule.base || 'yes'));
+    for (const r of rule.rules) parts.push(`${valueText(rule.key, r.value)} ${r.conds.map(condPart).join(' e ')}`.trim());
+    return parts.join('; ');
+  }
+
+  /* sito ufficiale della zona, se indicato */
+  function zoneWebsite(zone) {
+    const t = zone.tags;
+    for (const k of ['website', 'contact:website', 'url', 'source:url']) if (/^https?:\/\//.test(t[k] || '')) return String(t[k]);
+    return null;
+  }
+
+  /* distanza in metri di un punto dal bordo della zona */
+  function zoneEdgeDist(p, zone) {
+    let best = Infinity;
+    for (const ring of zone.rings) {
+      for (let i = 0; i + 1 < ring.length; i++) best = Math.min(best, pointSegDist(p, ring[i], ring[i + 1]));
+      best = Math.min(best, pointSegDist(p, ring[ring.length - 1], ring[0]));
+    }
+    return best;
+  }
+  /* il punto è dentro la zona, ad almeno minDepth metri dal bordo? */
+  function inZone(p, zone, minDepth) {
+    const b = zone.box, pad = 0.0003;
+    if (p[0] < b[0] - pad || p[0] > b[2] + pad || p[1] < b[1] - pad || p[1] > b[3] + pad) return false;
+    if (!pointInRings(p[0], p[1], zone.rings)) return false;
+    return !minDepth || zoneEdgeDist(p, zone) >= minDepth;
+  }
+
+  /*
+   * Zone attraversate dal percorso o che contengono una tappa.
+   * runs: tratti dentro la zona [{ a, b }] (metri dall'inizio); stops: indici delle tappe dentro.
+   * Il percorso campionato ogni 25 m; un tratto conta solo se entra di almeno 15 m (non la strada di confine).
+   */
+  function zoneCrossings(zones, route, stops) {
+    const out = [];
+    const c = route.coords, cum = route.cumD;
+    for (const z of zones || []) {
+      const b = z.box, pad = 0.0005;
+      const raw = [];
+      let cur = null;
+      const close = () => { if (cur) { raw.push(cur); cur = null; } };
+      for (let i = 0; i + 1 < c.length; i++) {
+        const p = c[i], q = c[i + 1];
+        if (Math.max(p[0], q[0]) < b[0] - pad || Math.min(p[0], q[0]) > b[2] + pad || Math.max(p[1], q[1]) < b[1] - pad || Math.min(p[1], q[1]) > b[3] + pad) { close(); continue; }
+        const d = cum[i + 1] - cum[i];
+        const n = Math.max(1, Math.ceil(d / 25));
+        for (let k = 0; k <= n; k++) {
+          if (k === n && i + 2 < c.length) break; // l'ultimo punto del tratto è il primo del successivo
+          const f = k / n, x = [p[0] + (q[0] - p[0]) * f, p[1] + (q[1] - p[1]) * f], al = cum[i] + d * f;
+          if (inZone(x, z, 0)) {
+            if (!cur) cur = { a: al, b: al, deep: false };
+            cur.b = al;
+            if (!cur.deep && zoneEdgeDist(x, z) >= ZONE_DEPTH) cur.deep = true;
+          } else close();
+        }
+      }
+      close();
+      const runs = [];
+      for (const r of raw) {
+        const last = runs[runs.length - 1];
+        if (last && r.a - last.b < ZONE_GAP) { last.b = r.b; last.deep = last.deep || r.deep; } else runs.push(Object.assign({}, r));
+      }
+      const real = runs.filter((r) => r.deep).map((r) => ({ a: r.a, b: r.b }));
+      const inside = (stops || []).map((s, i) => (inZone([s.lat, s.lon], z, 10) ? i : -1)).filter((i) => i >= 0);
+      if (!real.length && !inside.length) continue;
+      out.push({
+        zone: z, runs: real, stops: inside,
+        alongStart: real.length ? real[0].a : null,
+        alongEnd: real.length ? real[real.length - 1].b : null,
+        lengthM: real.reduce((s, r) => s + (r.b - r.a), 0),
+      });
+    }
+    return out.sort((x, y) => (x.alongStart == null ? Infinity : x.alongStart) - (y.alongStart == null ? Infinity : y.alongStart));
+  }
+
+  /*
+   * Punti da far evitare al calcolo: ZTL attive al passaggio, attraversate senza fermarsi dentro.
+   * items: zoneCrossings con lo stato (st) calcolato all'ora di passaggio.
+   */
+  function zoneAvoidPoints(items, route, stops) {
+    const out = [];
+    for (const x of items || []) {
+      if (x.stops.length || !x.runs.length || !x.st || x.st.state !== 'attivo') continue;
+      for (const run of x.runs) {
+        const p = route.index.pointAt(Math.min(run.b, run.a + 40)); // appena dentro la zona
+        if ((stops || []).some((s) => haversine([s.lat, s.lon], p) < AVOID_NEAR_STOP)) continue;
+        out.push({ lat: p[0], lon: p[1], title: 'ZTL attiva al passaggio', name: x.zone.name, ids: ['ztl/' + x.zone.id + '/' + Math.round(run.a)] });
+      }
+    }
+    return out;
+  }
+
   return {
     PRESETS, LIMITS, RULES, sanitizeVehicle,
     haversine, bearing, decodePolyline, encodePolyline, simplify, RouteIndex,
@@ -2291,5 +2477,6 @@
     trafficBoxes, matchIncidents, incidentStatus, trafficDelay,
     PLACE_LABEL, placeKind, placesFromTile, placeCandidates, pickPlaces, placeEstimateMin,
     TRAFFIC_SOURCES, roadRefs, roadOperators, routeOperators, sourceForRoads, avoidPoints, mergeAvoid, walkEstimate,
+    zonesFromTile, zoneRule, zoneStatus, zoneWhen, zoneWebsite, zoneCrossings, zoneAvoidPoints, inZone,
   };
 });
