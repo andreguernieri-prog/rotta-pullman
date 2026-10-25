@@ -227,6 +227,7 @@
     route: L.layerGroup().addTo(map),
     breaks: L.layerGroup().addTo(map),
     parks: L.layerGroup().addTo(map),
+    traffic: L.layerGroup().addTo(map),
     hazards: L.layerGroup().addTo(map),
     stops: L.layerGroup().addTo(map),
     me: L.layerGroup().addTo(map),
@@ -945,6 +946,9 @@
       state.parkings = { status: 'loading' };
       state.permits = { status: 'loading' };
       state.tomtom = state.options.tomtomKey ? { status: 'loading' } : null;
+      state.traffic = state.options.tomtomKey ? { status: 'loading', route: r, items: [] } : null;
+      clearTimeout(trafficTimer);
+      lg.traffic.clearLayers();
       state.stale = false;
       $('#stale').hidden = true;
       drawRoute();
@@ -958,6 +962,7 @@
       runAnalysis(my, signal);
       runPermits(my, signal);
       runTomTom(my, signal);
+      runTraffic(my, signal);
     } catch (e) {
       if (my !== seq || e.code === 'aborted') return;
       if (avoiding && (e.code === 'noroute' || e.code === 'nopoint')) showError('Non c\'è un percorso per questo mezzo che eviti quel punto: resta il percorso di prima.');
@@ -1064,8 +1069,8 @@
   const AVOID_ROUNDS = 3;
   async function maybeAvoid(my) {
     const r = state.route;
-    if (!r || my !== seq || !r.plan || r.plan.noAvoid || state.options.autoAvoid === false) return;
-    const pts = C.avoidPoints(allHazards(), r, r.stops.map((s) => s.bus || s));
+    if (!r || my !== seq || !r.plan || r.plan.noAvoid || state.options.autoAvoid === false || state.avoiding) return;
+    const pts = C.avoidPoints(allHazards(), r, r.stops.map((s) => s.bus || s)).concat(trafficAvoid(r));
     if (!pts.length) return;
     const merged = C.mergeAvoid(r.plan.avoid, pts);
     if (!merged.added) {
@@ -1281,8 +1286,9 @@
     state.plan = C.planTrip({ stopsT: r.legT, dwell, departureMs: depMs(), mode: state.breakMode, services });
     drawBreaks();
     if (state.analysis && state.analysis.hazards) drawHazards();
+    drawTraffic();
     if (!$('#res').hidden) {
-      renderSummary(); renderTimeline(); renderMini();
+      renderSummary(); renderTimeline(); renderMini(); renderTraffic();
       if (state.analysis && state.analysis.hazards) { renderCheck(); renderHazards(); }
     }
   }
@@ -1696,7 +1702,211 @@
     $('#res-empty').hidden = has;
     $('#res').hidden = !has;
     if (!has) return;
-    renderSummary(); renderRouteNotes(); renderCheck(); renderPermits(); renderTimeline(); renderHazards(); renderParkings(); renderSteps(); renderMini();
+    renderSummary(); renderRouteNotes(); renderCheck(); renderPermits(); renderTimeline(); renderHazards(); renderTraffic(); renderParkings(); renderSteps(); renderMini();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Traffico e cantieri (TomTom Traffic)                                */
+  /* ------------------------------------------------------------------ */
+  let trafficTimer = null;
+  const TRAFFIC_LINKS = [
+    { testo: 'CCISS Viaggiare informati', url: 'https://www.cciss.it/' },
+    { testo: 'Autostrade per l\'Italia', url: 'https://www.autostrade.it/' },
+    { testo: 'ANAS', url: 'https://www.stradeanas.it/' },
+  ];
+  const TR_GLYPH = {
+    chiusura: '<rect x="5" y="10.5" width="14" height="3" rx="1" fill="#fff"/>',
+    coda: '<path d="M3.5 15.5h4.5v-3.5H3.5z M9.75 15.5h4.5v-3.5h-4.5z M16 15.5h4.5v-3.5H16z" fill="#fff"/>',
+    cantiere: '<path d="M12 5l4.2 12.5H7.8z" fill="#fff"/><path d="M6 19h12" stroke="#fff" stroke-width="2" stroke-linecap="round"/>',
+    corsia: '<path d="M8 19V10l4-4.5 M16 19V5" stroke="#fff" stroke-width="2.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+    meteo: '<path d="M7.5 16a3.2 3.2 0 0 1 .3-6.4 4.3 4.3 0 0 1 8.2-1A3.7 3.7 0 0 1 16.8 16z" fill="#fff"/>',
+    altro: '<path d="M12 6v8" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/><circle cx="12" cy="18" r="1.6" fill="#fff"/>',
+  };
+  const trSvg = (cat) => `<svg viewBox="0 0 24 24" aria-hidden="true">${TR_GLYPH[cat] || TR_GLYPH.altro}</svg>`;
+
+  async function runTraffic(my, signal) {
+    const r = state.route;
+    clearTimeout(trafficTimer);
+    const key = state.options.tomtomKey;
+    if (!r || !key) { state.traffic = null; drawTraffic(); renderTraffic(); return; }
+    const prev = state.traffic && state.traffic.route === r ? state.traffic : null;
+    state.traffic = Object.assign({}, prev || { items: [] }, { status: 'loading', route: r });
+    renderTraffic();
+    try {
+      const feats = [];
+      for (const box of C.trafficBoxes(r.coords, r.cumD, 60000)) {
+        feats.push(...await API.tomtomIncidents(box, key, signal));
+        if (my !== seq) return;
+      }
+      state.traffic = { status: 'done', route: r, items: C.matchIncidents(feats, r.index), updatedAt: Date.now() };
+    } catch (e) {
+      if (e.code === 'aborted' || my !== seq) return;
+      state.traffic = { status: 'error', route: r, reason: e.message, items: prev ? prev.items : [], updatedAt: prev ? prev.updatedAt : null };
+    }
+    drawTraffic(); renderTraffic(); renderCheck(); renderSummary();
+    scheduleTrafficRefresh(my);
+    if (state.analysis && state.analysis.status === 'done') maybeAvoid(my);
+  }
+
+  /* vicino alla partenza (entro 2 ore) e durante il viaggio il traffico si aggiorna da solo ogni 7 minuti */
+  function scheduleTrafficRefresh(my) {
+    clearTimeout(trafficTimer);
+    const now = Date.now(), dep = depMs(), end = state.plan ? state.plan.endMs : dep;
+    if (dep - now > 2 * 3600e3 || now > end + 1800e3) return;
+    trafficTimer = setTimeout(() => {
+      if (my !== seq || !state.route) return;
+      if (document.visibilityState === 'hidden') { scheduleTrafficRefresh(my); return; }
+      runTraffic(my, workCtrl ? workCtrl.signal : undefined);
+    }, 7 * 60e3);
+  }
+
+  /* segnalazioni del percorso con lo stato all'ora di passaggio */
+  function trafficWithStatus() {
+    const t = state.traffic;
+    if (!t || t.route !== state.route || !t.items) return [];
+    const now = Date.now();
+    return t.items.map((x) => {
+      const pass = clockAtAlong(x.alongStart);
+      return Object.assign({}, x, { pass, st: C.incidentStatus(x, pass, now) });
+    });
+  }
+
+  /* chiusure valide al passaggio, da far evitare al calcolo */
+  function trafficAvoid(r) {
+    const stops = r.stops.map((s) => s.bus || s);
+    return trafficWithStatus()
+      .filter((x) => x.rel === 'certo' && x.cat === 'chiusura' && x.st.state === 'attivo')
+      .map((x) => {
+        const p = r.index.pointAt((x.alongStart + x.alongEnd) / 2);
+        return { lat: p[0], lon: p[1], title: 'Strada chiusa' + (x.roads.length ? ' · ' + x.roads.join(', ') : ''), name: x.from && x.to ? `${x.from} → ${x.to}` : '', ids: ['traffico/' + x.id] };
+      })
+      .filter((p) => !stops.some((s) => C.haversine([s.lat, s.lon], [p.lat, p.lon]) < 150));
+  }
+
+  function trStateLabel(x) {
+    switch (x.st.state) {
+      case 'attivo': return x.cat === 'chiusura' ? 'Chiusa al passaggio' : 'Al tuo passaggio';
+      case 'ora': return 'Segnalato ora';
+      case 'futuro': return 'Inizia dopo il passaggio';
+      default: return 'Finisce prima del passaggio';
+    }
+  }
+  function trTitle(x) { return x.label + (x.roads.length ? ' · ' + x.roads.join(', ') : ''); }
+  function trWhen(x) {
+    const f = (iso) => {
+      const d = new Date(iso);
+      if (!isFinite(d)) return '';
+      const o = { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' };
+      if (d.getFullYear() !== new Date().getFullYear()) o.year = 'numeric';
+      return d.toLocaleString('it-IT', o);
+    };
+    if (x.start && x.end) return `dal ${f(x.start)} al ${f(x.end)}`;
+    if (x.end) return `fino al ${f(x.end)}`;
+    if (x.start) return `dal ${f(x.start)}`;
+    return '';
+  }
+  function trAdvice(x) {
+    if (x.st.state !== 'attivo') return x.st.state === 'ora' ? 'Segnalato adesso: quando passi probabilmente sarà risolto. Aggiorna il traffico prima di partire.' : 'Non vale al tuo passaggio. Se cambi giorno o orario, l\'app ricontrolla.';
+    if (x.cat === 'chiusura') return 'La strada è chiusa quando passi: l\'app cerca da sola un percorso che la eviti. Se non lo trova, usa «Evita questo punto» o aggiungi una tappa su un\'altra strada.';
+    if (x.cat === 'cantiere' || x.cat === 'corsia') return 'Cantiere o restringimento al tuo passaggio: possibili rallentamenti e corsie strette. Verifica le indicazioni del gestore della strada.';
+    return 'Segnalazione in corso: aggiorna il traffico poco prima di partire e, se il ritardo è alto, valuta un\'altra strada.';
+  }
+  function trMeta(x) {
+    return [x.from && x.to ? `${x.from} → ${x.to}` : x.from || x.to, x.delayS >= 60 ? `ritardo +${Math.round(x.delayS / 60)} min` : '',
+      x.lengthM >= 100 ? C.fmtDist(x.lengthM) : '', `km ${C.fmtNum(x.alongStart / 1000, 0)}`, x.pass ? 'ci arrivi ' + passText(x.pass) : ''].filter(Boolean).join(' · ');
+  }
+
+  function trafficCard(x) {
+    const when = trWhen(x);
+    return h('div', { class: 'hzpop' },
+      h('div', { class: 'hzpop-head' },
+        h('span', { class: `tr-icon ${x.st.severity}`, svg: trSvg(x.cat) }),
+        h('span', null, h('b', { text: trTitle(x) }), h('span', { class: `sev sev-${x.st.severity}-bg`, text: trStateLabel(x) }))),
+      x.desc ? h('p', { text: x.desc }) : null,
+      h('p', { class: 'hz-meta', text: trMeta(x) }),
+      when ? h('p', { class: 'hz-meta', text: 'Validità: ' + when }) : null,
+      x.rel === 'vicino' ? h('span', { class: 'maybe-tag', text: 'Carreggiata non certa' }) : null,
+      h('p', { class: 'hzpop-advice' }, h('b', { text: 'Cosa fare: ' }), trAdvice(x)),
+      h('div', { class: 'hz-links' },
+        x.st.state === 'attivo' ? h('button', { type: 'button', onclick: () => avoidHazard({ alongStart: x.alongStart, alongEnd: x.alongEnd, title: trTitle(x), name: x.from && x.to ? `${x.from} → ${x.to}` : '', ids: ['traffico/' + x.id] }) }, 'Evita questo punto') : null,
+        h('a', { href: `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${x.lat.toFixed(6)},${x.lon.toFixed(6)}`, target: '_blank', rel: 'noopener' }, 'Street View'),
+        h('a', { href: TRAFFIC_LINKS[0].url, target: '_blank', rel: 'noopener' }, 'CCISS')),
+      h('p', { class: 'hz-meta', text: 'Fonte: TomTom Traffic' + (state.traffic && state.traffic.updatedAt ? `, aggiornato alle ${C.fmtClock(state.traffic.updatedAt)}` : '') + '.' }));
+  }
+
+  function drawTraffic() {
+    lg.traffic.clearLayers();
+    for (const x of trafficWithStatus()) {
+      if (x.st.state === 'finito') continue;
+      const color = x.st.severity === 'red' ? '#c8102e' : x.st.severity === 'amber' ? '#e07b00' : '#7a8696';
+      if (x.coords.length > 1) L.polyline(x.coords, { color, weight: 7, opacity: 0.75, dashArray: x.st.state === 'attivo' ? null : '6 8', interactive: false }).addTo(lg.traffic);
+      const icon = L.divIcon({ className: '', html: `<div class="tr-marker ${x.st.severity}">${trSvg(x.cat)}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] });
+      L.marker([x.lat, x.lon], { icon, zIndexOffset: x.st.severity === 'red' ? 550 : 350, title: trTitle(x) })
+        .bindPopup(() => trafficCard(x), { maxWidth: 300, minWidth: 230, className: 'hz-popup' })
+        .addTo(lg.traffic);
+    }
+  }
+
+  function trafficItem(x) {
+    return h('li', { class: 'hz tr' + (x.st.severity === 'info' ? ' info' : '') },
+      h('span', { class: `tr-icon ${x.st.severity}`, svg: trSvg(x.cat) }),
+      h('div', { class: 'hz-body' },
+        h('span', { class: 'hz-title' }, trTitle(x), h('span', { class: `sev sev-${x.st.severity}-bg`, text: trStateLabel(x) })),
+        x.desc ? h('span', { text: x.desc }) : null,
+        h('span', { class: 'hz-meta', text: trMeta(x) }),
+        trWhen(x) ? h('span', { class: 'hz-meta', text: 'Validità: ' + trWhen(x) }) : null,
+        x.rel === 'vicino' ? h('span', { class: 'maybe-tag', text: 'Carreggiata non certa' }) : null,
+        h('span', { class: 'hz-links' },
+          h('button', { type: 'button', onclick: () => { flyTo(x.lat, x.lon, 15); } }, 'Mostra sulla mappa'),
+          x.st.state === 'attivo' ? h('button', { type: 'button', onclick: () => avoidHazard({ alongStart: x.alongStart, alongEnd: x.alongEnd, title: trTitle(x), name: x.from && x.to ? `${x.from} → ${x.to}` : '', ids: ['traffico/' + x.id] }) }, 'Evita questo punto') : null)));
+  }
+
+  function trafficLinks() {
+    return h('li', { class: 'hint' }, 'Notiziari ufficiali: ', ...TRAFFIC_LINKS.flatMap((l, i) => [i ? ' · ' : '', h('a', { href: l.url, target: '_blank', rel: 'noopener' }, l.testo)]));
+  }
+
+  /* ritardo per il traffico segnalato ora (minuti) e se la partenza è abbastanza vicina da contare */
+  function trafficNow() {
+    const t = state.traffic;
+    if (!t || t.status !== 'done' || t.route !== state.route) return null;
+    const min = Math.round(C.trafficDelay(t.items, Date.now()) / 60);
+    const soon = depMs() - Date.now() < 3 * 3600e3;
+    return { min, soon };
+  }
+
+  function renderTraffic() {
+    const ul = $('#traffic');
+    if (!ul) return;
+    ul.replaceChildren();
+    $('#tr-count').textContent = '';
+    const t = state.traffic;
+    const list = h('ul', { class: 'hazards' });
+    ul.append(list);
+    if (!state.route) return;
+    if (!state.options.tomtomKey) {
+      list.append(h('li', { class: 'none' }, 'Per vedere code, incidenti, cantieri e chiusure lungo il percorso aggiungi la chiave TomTom nelle preferenze di percorso.'), trafficLinks());
+      return;
+    }
+    if (!t || t.status === 'loading' && !(t.items && t.items.length)) { list.append(h('li', { class: 'none' }, 'Cerco le segnalazioni di traffico lungo il percorso…')); return; }
+    const items = trafficWithStatus().filter((x) => x.st.state !== 'finito');
+    const main = items.filter((x) => x.st.state === 'attivo').sort((a, b) => (a.st.severity === b.st.severity ? a.alongStart - b.alongStart : a.st.severity === 'red' ? -1 : 1));
+    const other = items.filter((x) => x.st.state !== 'attivo');
+    if (main.length) $('#tr-count').textContent = String(main.length);
+    const head = h('li', { class: 'tr-head' },
+      h('span', { class: 'hz-meta', text: t.status === 'loading' ? 'Aggiornamento in corso…' : t.updatedAt ? `Aggiornato alle ${C.fmtClock(t.updatedAt)} · TomTom Traffic` : 'TomTom Traffic' }),
+      h('button', { type: 'button', class: 'btn-ghost', onclick: () => runTraffic(seq, workCtrl ? workCtrl.signal : undefined) }, 'Aggiorna il traffico'));
+    list.append(head);
+    if (t.status === 'error') list.append(h('li', { class: 'none' }, (t.reason || 'Traffico non disponibile.')));
+    const now = trafficNow();
+    if (now && now.min >= 1) list.append(h('li', { class: 'tr-delay' }, h('b', { text: `Con il traffico segnalato ora: circa +${now.min} min` }), now.soon ? '' : ' (se partissi adesso: alla tua partenza la situazione sarà diversa)'));
+    if (!main.length && t.status === 'done') list.append(h('li', { class: 'none' }, 'Nessuna segnalazione sul percorso al tuo passaggio.'));
+    for (const x of main) list.append(trafficItem(x));
+    if (other.length) {
+      list.append(h('li', { class: 'hz-quiet' }, h('details', null,
+        h('summary', null, `Altre segnalazioni, non valide al tuo passaggio (${other.length})`),
+        h('ul', { class: 'hazards' }, other.map(trafficItem)))));
+    }
+    list.append(trafficLinks());
   }
 
   /* avvisi sul percorso: tappe spostate dove arriva il pullman, alternativa ai punti non transitabili */
@@ -1760,6 +1970,8 @@
     if (r.flags.autostrada) chips.append(h('span', { class: 'chip chip-motorway' }, 'Autostrada'));
     if (r.flags.pedaggi) chips.append(h('span', { class: 'chip' }, 'Pedaggi'));
     if (r.flags.traghetto) chips.append(h('span', { class: 'chip' }, 'Traghetto'));
+    const tn = trafficNow();
+    if (tn && tn.soon && tn.min >= 1) chips.append(h('span', { class: 'chip chip-traffic' }, `Traffico ora +${tn.min} min`));
     const pauses = p.events.filter((e) => e.type === 'pausa');
     chips.append(h('span', { class: 'chip chip-accent' }, pauses.length ? `${pauses.length} ${pauses.length === 1 ? 'pausa' : 'pause'} autista` : 'Nessuna pausa obbligatoria'));
     chips.append(h('span', { class: 'chip' }, r.engine === 'ors' ? 'openrouteservice · bus' : 'Valhalla · mezzo pesante'));
@@ -1882,6 +2094,11 @@
     }
     const ttn = tomtomNote();
     if (ttn) body.append(h('span', { class: 'so-far src', text: ttn }));
+    const tr = trafficWithStatus().filter((x) => x.st.state === 'attivo' && x.rel === 'certo');
+    if (tr.length) {
+      const chiuse = tr.filter((x) => x.cat === 'chiusura').length;
+      body.append(h('span', { class: 'so-far' + (chiuse ? ' tr-alert' : ''), text: `Traffico e cantieri al tuo passaggio: ${chiuse ? plural(chiuse, 'strada chiusa', 'strade chiuse') + ', ' : ''}${plural(tr.length - chiuse, 'altra segnalazione', 'altre segnalazioni')} (sezione «Traffico e cantieri»).` }));
+    }
     box.append(body);
   }
 

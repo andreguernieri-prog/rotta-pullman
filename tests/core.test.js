@@ -715,3 +715,53 @@ test('senza strade riconosciute: stradina di servizio senza nome sovrapposta a u
   const unnamed = C.analyzeElements(els, idx, veh, { streetAt: () => '' });
   assert.equal(unnamed.hazards[0].rel, 'certo');
 });
+
+/* ------------------------------- traffico ------------------------------- */
+test('traffico: riquadri lungo il percorso, entro i limiti del servizio', () => {
+  const coords = straightRoute(44, 11, 400, 0.002); // ~89 km verso nord
+  const idx = new C.RouteIndex(coords);
+  const boxes = C.trafficBoxes(coords, idx.cumD, 60000);
+  assert.equal(boxes.length, 2);
+  for (const [o0, a0, o1, a1] of boxes) {
+    const km2 = ((a1 - a0) * 110.54) * ((o1 - o0) * 111.32 * Math.cos(a0 * Math.PI / 180));
+    assert.ok(km2 < 10000);
+    assert.ok(a0 < a1 && o0 < o1);
+  }
+  assert.ok(boxes[0][1] <= 44 && boxes[1][3] >= coords[coords.length - 1][0]);
+});
+
+test('traffico: segnalazioni sul percorso, la carreggiata opposta si scarta', () => {
+  const coords = straightRoute(44, 11, 100, 0.001);
+  const idx = new C.RouteIndex(coords);
+  const line = (from, to) => coords.slice(from, to + 1).map(([la, lo]) => [lo, la]);
+  const feats = [
+    { type: 'Feature', geometry: { type: 'LineString', coordinates: line(20, 25) }, properties: { id: 'coda', iconCategory: 6, magnitudeOfDelay: 2, delay: 600, length: 550, roadNumbers: ['A1'], from: 'Parma', to: 'Reggio', events: [{ description: 'Coda' }, { description: 'Coda' }], timeValidity: 'present' } },
+    { type: 'Feature', geometry: { type: 'LineString', coordinates: line(40, 45).reverse() }, properties: { id: 'opposta', iconCategory: 6, delay: 900 } },
+    { type: 'Feature', geometry: { type: 'LineString', coordinates: [[11.01, 44.03], [11.011, 44.031]] }, properties: { id: 'lontana', iconCategory: 1 } },
+    { type: 'Feature', geometry: { type: 'Point', coordinates: [11.0001, 44.06] }, properties: { id: 'punto', iconCategory: 1 } },
+    { type: 'Feature', geometry: { type: 'LineString', coordinates: line(20, 25) }, properties: { id: 'coda', iconCategory: 6 } }, // doppione da un altro riquadro
+  ];
+  const m = C.matchIncidents(feats, idx);
+  assert.deepEqual(m.map((x) => x.id), ['coda', 'punto']);
+  assert.equal(m[0].label, 'Coda');
+  assert.equal(m[0].desc, 'Coda');
+  assert.equal(m[0].rel, 'certo');
+  assert.equal(m[1].rel, 'vicino');
+  near(m[0].alongStart, idx.cumD[20], 2);
+});
+
+test('traffico: stato all\'ora di passaggio e ritardo di adesso', () => {
+  const now = Date.parse('2026-10-26T08:00:00Z');
+  const h = (x) => now + x * 3600e3;
+  const coda = { cat: 'coda', start: null, end: null, rel: 'certo', delayS: 600, validity: 'present' };
+  assert.equal(C.incidentStatus(coda, h(1), now).state, 'attivo');
+  assert.equal(C.incidentStatus(coda, h(1), now).severity, 'amber');
+  assert.equal(C.incidentStatus(coda, h(30), now).state, 'ora'); // passi domani: probabilmente risolta
+  const cantiere = { cat: 'cantiere', start: '2026-10-01T00:00:00Z', end: '2026-11-15T00:00:00Z' };
+  assert.equal(C.incidentStatus(cantiere, h(48), now).state, 'attivo');
+  assert.equal(C.incidentStatus(cantiere, Date.parse('2026-12-01T00:00:00Z'), now).state, 'finito');
+  const chiusura = { cat: 'chiusura', start: '2026-10-27T20:00:00Z', end: '2026-10-28T06:00:00Z' };
+  assert.equal(C.incidentStatus(chiusura, h(2), now).state, 'futuro');
+  assert.deepEqual(C.incidentStatus(chiusura, Date.parse('2026-10-27T22:00:00Z'), now), { state: 'attivo', severity: 'red' });
+  assert.equal(C.trafficDelay([coda, Object.assign({}, coda, { rel: 'vicino' }), Object.assign({}, coda, { validity: 'future' })], now), 600);
+});

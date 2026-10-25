@@ -393,6 +393,22 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 .route-note ul { margin: 0; padding-left: 18px; }
 .drop-marker { width: 28px; height: 28px; border-radius: 50%; background: #fff; color: #1d4f9c; border: 2.5px solid #1d4f9c; display: grid; place-items: center; box-shadow: 0 1px 4px rgba(0,0,0,.4); }
 .drop-marker svg { width: 17px; height: 17px; }
+.tr-marker { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.45); background: #7a8696; }
+.tr-marker.red { background: #c8102e; }
+.tr-marker.amber { background: #e07b00; }
+.tr-marker svg { width: 17px; height: 17px; }
+.tr-icon { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; background: #7a8696; }
+.tr-icon.red { background: #c8102e; }
+.tr-icon.amber { background: #e07b00; }
+.tr-icon svg { width: 22px; height: 22px; }
+.hz.tr { grid-template-columns: 36px 1fr; }
+.hz.tr.info .tr-icon { opacity: .6; }
+.hzpop-head .tr-icon { width: 30px; height: 30px; }
+.hzpop-head .tr-icon svg { width: 18px; height: 18px; }
+.tr-head { list-style: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.tr-delay { list-style: none; padding: 8px 10px; border-radius: var(--r); background: var(--amber-soft); font-size: 14px; }
+.so-far.tr-alert { color: var(--red); font-weight: 600; }
+.chip-traffic { background: var(--amber-soft); color: var(--amber); }
 .noroute { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .noroute-list { margin: 0; padding-left: 18px; }
 .noroute-list li { margin: 2px 0; }

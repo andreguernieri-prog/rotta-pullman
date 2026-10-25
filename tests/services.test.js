@@ -123,3 +123,18 @@ test('valhalla: strade percorse a tratti di 80 km, con ponti e gallerie; un trat
   assert.ok(sent.every((x) => x.url.endsWith('/trace_attributes') && x.opts.method === 'POST' && !x.opts.headers), 'POST semplice, senza intestazioni');
   assert.deepEqual(JSON.parse(sent[0].opts.body).filters.attributes.slice(0, 2), ['shape', 'edge.way_id']);
 });
+
+test('tomtom: segnalazioni di traffico in un riquadro, in italiano, presenti e future', async () => {
+  let url = '';
+  global.fetch = async (u) => { url = String(u); return res(200, JSON.stringify({ incidents: [{ type: 'Feature', properties: { id: 'x' } }] })); };
+  const out = await S.tomtomIncidents([11, 44, 11.5, 44.5], 'CHIAVE');
+  assert.equal(out.length, 1);
+  const q = new URL(url);
+  assert.equal(q.origin + q.pathname, 'https://api.tomtom.com/traffic/services/5/incidentDetails');
+  assert.equal(q.searchParams.get('bbox'), '11,44,11.5,44.5');
+  assert.equal(q.searchParams.get('language'), 'it-IT');
+  assert.equal(q.searchParams.get('timeValidityFilter'), 'present,future');
+  assert.match(q.searchParams.get('fields'), /iconCategory.*delay.*roadNumbers/);
+  global.fetch = async () => res(403, '{}');
+  await assert.rejects(S.tomtomIncidents([11, 44, 11.5, 44.5], 'CHIAVE'), /non è abilitata al servizio Traffic/);
+});

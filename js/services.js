@@ -556,6 +556,22 @@ out body geom;`;
     return { runs, failed, chunks: chunks.length };
   }
 
+  /* segnalazioni di traffico TomTom in un riquadro [minLon, minLat, maxLon, maxLat], in italiano */
+  const INCIDENT_FIELDS = '{incidents{type,geometry{type,coordinates},properties{id,iconCategory,magnitudeOfDelay,events{description,code,iconCategory},startTime,endTime,from,to,length,delay,roadNumbers,timeValidity}}}';
+  async function tomtomIncidents(bbox, key, signal) {
+    const u = new URL('https://api.tomtom.com/traffic/services/5/incidentDetails');
+    u.searchParams.set('key', key);
+    u.searchParams.set('bbox', bbox.join(','));
+    u.searchParams.set('fields', INCIDENT_FIELDS);
+    u.searchParams.set('language', 'it-IT');
+    u.searchParams.set('timeValidityFilter', 'present,future');
+    const r = await request(u.toString(), { signal }, 20000);
+    if (r.status === 401 || r.status === 403) throw new ServiceError('La chiave TomTom non è abilitata al servizio Traffic: attivalo nel tuo account su developer.tomtom.com.', 'nokey');
+    if (r.status === 429) throw new ServiceError('Limite di richieste TomTom raggiunto: riprova più tardi.', 'rate');
+    if (!r.ok || !r.data) throw new ServiceError('Il servizio traffico di TomTom non risponde. Riprova tra poco.', 'traffic');
+    return r.data.incidents || [];
+  }
+
   async function tomtomRoute(stops, veh, margin, opt, key, mode, signal) {
     const locs = stops.map((s) => s.lat.toFixed(6) + ',' + s.lon.toFixed(6)).join(':');
     const u = new URL('https://api.tomtom.com/routing/1/calculateRoute/' + locs + '/json');
@@ -611,5 +627,5 @@ out body geom;`;
     return { image: list[0] || null, signs };
   }
 
-  root.RPServices = { URLS, ServiceError, geocode, geocodeFallback, reverse, routeValhalla, routeOrs, corridor, corridorQuery, parkings, valhallaBody, comuneAt, sleep, dataIndex, dataTiles, tomtomRoute, mapillaryNear, traceWays };
+  root.RPServices = { URLS, ServiceError, geocode, geocodeFallback, reverse, routeValhalla, routeOrs, corridor, corridorQuery, parkings, valhallaBody, comuneAt, sleep, dataIndex, dataTiles, tomtomRoute, tomtomIncidents, mapillaryNear, traceWays };
 })(typeof self !== 'undefined' ? self : this);

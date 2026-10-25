@@ -35,7 +35,7 @@ function serve() {
 
 /* ---------------- servizi simulati ---------------- */
 const VIA_A1 = [[45.4860, 9.2044], [45.40, 9.33], [45.31, 9.50], [45.05, 9.70], [44.80, 10.33], [44.65, 10.93], [44.50, 11.34], [44.25, 11.30], [43.95, 11.20], [43.7629, 11.2650]];
-const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null, tomtomUrls: [], vicino: false, orario: false, dateTimes: [], parkNoBus: false, blockDest: false, unreachableDest: false, honorExclude: false, fixedCoords: null, valhallaBodies: [], viaduct: false, traceFail: false, traceCalls: 0 };
+const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null, tomtomUrls: [], vicino: false, orario: false, dateTimes: [], parkNoBus: false, blockDest: false, unreachableDest: false, honorExclude: false, fixedCoords: null, valhallaBodies: [], viaduct: false, traceFail: false, traceCalls: 0, traffic: false, incidentCalls: 0 };
 
 function densify(pts, step) {
   const out = [];
@@ -101,6 +101,27 @@ function mockValhalla(url) {
   mocks.lastCoords = all;
   if (mocks.honorExclude && !excl) mocks.fixedCoords = all; // i limiti restano dove sono sul percorso più veloce
   return { status: 200, body: { trip: { legs, summary: { length: totLen / 1000, time: totTime, has_toll: true, has_highway: true, has_ferry: false }, status: 0, units: 'kilometers', language: 'it-IT' } } };
+}
+
+/* segnalazioni di traffico TomTom, poste sul percorso più veloce */
+function mockIncidents(url) {
+  mocks.incidentCalls++;
+  const c = mocks.fixedCoords || mocks.lastCoords;
+  if (!mocks.traffic || !c) return { incidents: [] };
+  const bbox = new URL(url).searchParams.get('bbox').split(',').map(Number);
+  const line = (frac, n) => { const i = Math.floor(c.length * frac); return c.slice(i, i + n).map(([la, lo]) => [lo, la]); };
+  const now = Date.now();
+  const iso = (ms) => new Date(ms).toISOString();
+  const f = (frac, props, reverse) => { const g = line(frac, 4); return { type: 'Feature', geometry: { type: 'LineString', coordinates: reverse ? g.reverse() : g }, properties: props }; };
+  const all = [
+    f(0.30, { id: 'tt-coda', iconCategory: 6, magnitudeOfDelay: 2, delay: 600, length: 1200, roadNumbers: ['A1'], from: 'Parma', to: 'Reggio Emilia', events: [{ description: 'Coda' }], timeValidity: 'present' }),
+    f(0.40, { id: 'tt-opposta', iconCategory: 1, delay: 1200, roadNumbers: ['A1'], events: [{ description: 'Incidente' }], timeValidity: 'present' }, true),
+    f(0.55, { id: 'tt-cantiere', iconCategory: 9, magnitudeOfDelay: 1, delay: 120, roadNumbers: ['A1'], events: [{ description: 'Lavori in corso' }], startTime: iso(now - 30 * 864e5), endTime: iso(now + 365 * 864e5), timeValidity: 'present' }),
+    f(0.70, { id: 'tt-chiusura', iconCategory: 8, magnitudeOfDelay: 4, roadNumbers: ['SS65'], from: 'Pianoro', to: 'Sasso Marconi', events: [{ description: 'Strada chiusa' }], startTime: iso(now - 3600e3), endTime: iso(now + 30 * 864e5), timeValidity: 'present' }),
+    f(0.45, { id: 'tt-futuro', iconCategory: 9, roadNumbers: ['A1'], events: [{ description: 'Lavori programmati' }], startTime: iso(now + 400 * 864e5), endTime: iso(now + 410 * 864e5), timeValidity: 'future' }),
+  ];
+  const inBox = (x) => { const [lo, la] = x.geometry.coordinates[0]; return lo >= bbox[0] && lo <= bbox[2] && la >= bbox[1] && la <= bbox[3]; };
+  return { incidents: all.filter(inBox) };
 }
 
 /* strade percorse (trace_attributes): le vie dei limiti che coincidono col percorso sono quelle percorse;
@@ -274,6 +295,7 @@ async function setupRoutes(context) {
     if (url.includes('photon.komoot.io')) return json(mockPhoton(url));
     if (url.includes('nominatim.openstreetmap.org/reverse')) return json(mockNominatimReverse(url));
     if (url.includes('nominatim.openstreetmap.org')) return json([]);
+    if (url.startsWith('https://api.tomtom.com/traffic/')) return json(mockIncidents(url));
     if (url.startsWith('https://api.tomtom.com/routing/')) return json(mockTomTom(url));
     if (url.startsWith('https://graph.mapillary.com/images')) return json({ data: [{ id: '4242', thumb_256_url: 'https://mapillary-thumb.example/4242.jpg', captured_at: 1690000000000 }] });
     if (url.startsWith('https://graph.mapillary.com/map_features')) return json({ data: [{ id: '77', object_value: 'regulatory--height-limit--g1', last_seen_at: 1690000000000, geometry: { type: 'Point', coordinates: [0, 0] } }] });
@@ -906,6 +928,64 @@ async function setupRoutes(context) {
     });
     Object.assign(mocks, { viaduct: false, traceFail: false });
     await bctx.close();
+  }
+
+  /* --- traffico e cantieri (TomTom Traffic) --- */
+  {
+    const rctx = await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: 'it-IT', timezoneId: 'Europe/Rome' });
+    await setupRoutes(rctx);
+    Object.assign(mocks, { traffic: true, incidentCalls: 0, honorExclude: false, fixedCoords: null, lastCoords: null });
+    const q = await rctx.newPage();
+    watch(q, 'traffico');
+    await q.goto(base);
+    await q.waitForSelector('#check-banner.red', { timeout: 20000 });
+    await step('traffico e cantieri: segnalazioni al passaggio, ritardo, aggiornamento, chiusura evitata', async () => {
+      assert.match(await q.textContent('#traffic'), /aggiungi la chiave TomTom/);
+      await q.click('#tab-viaggio');
+      await q.click('#opt-details summary');
+      await q.fill('#opt-tomtomkey', 'CHIAVE-PROVA');
+      await q.press('#opt-tomtomkey', 'Tab');
+      // partenza tra 20 minuti: il traffico di adesso conta
+      await q.evaluate(() => {
+        const d = new Date(Date.now() + 20 * 60e3), p = (n) => String(n).padStart(2, '0');
+        const el = document.querySelector('#in-departure');
+        el.value = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await q.click('#btn-route');
+      await q.waitForFunction(() => window.__rp.state.traffic && window.__rp.state.traffic.status === 'done', null, { timeout: 30000 });
+      await q.waitForFunction(() => window.__rp.state.analysis && window.__rp.state.analysis.status === 'done', null, { timeout: 30000 });
+      const txt = await q.textContent('#traffic');
+      assert.match(txt, /Strada chiusa · SS65.*Chiusa al passaggio.*Pianoro → Sasso Marconi/s);
+      assert.match(txt, /Coda · A1.*Al tuo passaggio.*Parma → Reggio Emilia.*ritardo \+10 min/s);
+      assert.match(txt, /Cantiere · A1.*Lavori in corso/s);
+      assert.doesNotMatch(txt, /Incidente/, 'la carreggiata opposta si scarta');
+      assert.match(txt, /Altre segnalazioni, non valide al tuo passaggio \(1\)/);
+      assert.match(txt, /Con il traffico segnalato ora: circa \+12 min/);
+      assert.match(await q.textContent('#sum-chips'), /Traffico ora \+12 min/);
+      assert.match(await q.textContent('#check-banner'), /Traffico e cantieri al tuo passaggio: 1 strada chiusa, 2 altre segnalazioni/);
+      assert.equal(await q.locator('.tr-marker').count(), 4);
+      assert.match(await q.getAttribute('#traffic a:has-text("CCISS Viaggiare informati")', 'href'), /cciss\.it/);
+      const before = mocks.incidentCalls;
+      await q.click('#traffic button:has-text("Aggiorna il traffico")');
+      for (let i = 0; i < 50 && mocks.incidentCalls === before; i++) await q.waitForTimeout(100);
+      assert.ok(mocks.incidentCalls > before, 'aggiornamento manuale');
+      await q.locator('#traffic-sec').scrollIntoViewIfNeeded();
+      await q.locator('.tr-marker.red').click();
+      await q.waitForSelector('.hz-popup .hzpop', { timeout: 5000 });
+      assert.match(await q.textContent('.hz-popup .hzpop'), /La strada è chiusa quando passi/);
+      await q.waitForTimeout(500);
+      await q.screenshot({ path: path.join(OUT, '19-traffico.png') });
+      // con un'alternativa disponibile, la strada chiusa si evita da sola
+      mocks.honorExclude = true;
+      mocks.fixedCoords = null;
+      await q.click('#tab-viaggio');
+      await q.click('#btn-route');
+      await q.waitForFunction(() => /Percorso alternativo/.test(document.querySelector('#route-notes').textContent), null, { timeout: 40000 });
+      assert.match(await q.textContent('#route-notes'), /Strada chiusa · SS65/);
+    });
+    Object.assign(mocks, { traffic: false, honorExclude: false, fixedCoords: null });
+    await rctx.close();
   }
 
   /* --- tema scuro --- */

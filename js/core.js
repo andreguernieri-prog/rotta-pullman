@@ -1708,6 +1708,112 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* Traffico e cantieri (TomTom Traffic Incidents)                      */
+  /* ------------------------------------------------------------------ */
+  const TRAFFIC_CAT = {
+    0: { cat: 'altro', label: 'Segnalazione' }, 1: { cat: 'incidente', label: 'Incidente' }, 2: { cat: 'meteo', label: 'Nebbia' },
+    3: { cat: 'pericolo', label: 'Condizioni pericolose' }, 4: { cat: 'meteo', label: 'Pioggia' }, 5: { cat: 'meteo', label: 'Ghiaccio' },
+    6: { cat: 'coda', label: 'Coda' }, 7: { cat: 'corsia', label: 'Corsia chiusa' }, 8: { cat: 'chiusura', label: 'Strada chiusa' },
+    9: { cat: 'cantiere', label: 'Cantiere' }, 10: { cat: 'meteo', label: 'Vento forte' }, 11: { cat: 'meteo', label: 'Allagamento' },
+    14: { cat: 'veicolo', label: 'Veicolo in avaria' },
+  };
+  // segnalazioni passeggere: se non hanno una fine, contano solo se passi entro 3 ore
+  const TRANSIENT = ['coda', 'incidente', 'veicolo', 'meteo', 'pericolo', 'altro'];
+
+  /* riquadri [minLon, minLat, maxLon, maxLat] di circa stepM metri di percorso (il servizio accetta fino a 10.000 km²) */
+  function trafficBoxes(coords, cumD, stepM) {
+    const out = [];
+    const step = stepM || 60000;
+    let start = 0;
+    for (let i = 1; i < coords.length; i++) {
+      if (cumD[i] - cumD[start] < step && i < coords.length - 1) continue;
+      let a0 = 90, a1 = -90, o0 = 180, o1 = -180;
+      for (let k = start; k <= i; k++) {
+        const [la, lo] = coords[k];
+        if (la < a0) a0 = la; if (la > a1) a1 = la; if (lo < o0) o0 = lo; if (lo > o1) o1 = lo;
+      }
+      const pad = 0.003;
+      out.push([o0 - pad, a0 - pad, o1 + pad, a1 + pad].map((x) => +x.toFixed(5)));
+      start = i;
+    }
+    return out;
+  }
+
+  function angleDiff(a, b) {
+    let d = Math.abs(a - b) % (2 * Math.PI);
+    return d > Math.PI ? 2 * Math.PI - d : d;
+  }
+
+  /*
+   * Segnalazioni TomTom (GeoJSON) che riguardano il percorso: punti entro 35 m e, per le linee, stesso senso
+   * di marcia (la carreggiata opposta si scarta). rel 'vicino' per i punti singoli, di cui non si sa il senso.
+   */
+  function matchIncidents(features, idx) {
+    const out = [];
+    const seen = new Set();
+    for (const f of features || []) {
+      const p = (f && f.properties) || {};
+      const g = (f && f.geometry) || {};
+      const pts = g.type === 'LineString' ? (g.coordinates || []).map((c) => [c[1], c[0]])
+        : g.type === 'Point' ? [[g.coordinates[1], g.coordinates[0]]] : [];
+      if (!pts.length) continue;
+      const id = String(p.id || pts[0].join(',') + '|' + p.iconCategory);
+      if (seen.has(id)) continue; // la stessa segnalazione in due riquadri
+      seen.add(id);
+      const hits = [];
+      let aligned = 0, opposite = 0;
+      for (let i = 0; i < pts.length; i++) {
+        const r = idx.nearest(pts[i][0], pts[i][1], 35);
+        if (!r) continue;
+        if (pts.length === 1) { hits.push(r.along); continue; }
+        const a = i < pts.length - 1 ? pts[i] : pts[i - 1], b = i < pts.length - 1 ? pts[i + 1] : pts[i];
+        const d = angleDiff(bearing(a, b), bearing(idx.pointAt(Math.max(0, r.along - 15)), idx.pointAt(r.along + 15)));
+        if (d < Math.PI * 50 / 180) { aligned++; hits.push(r.along); } else if (d > Math.PI * 130 / 180) opposite++;
+      }
+      if (!hits.length) continue;
+      if (pts.length > 1 && (aligned < Math.min(2, pts.length - 1) || opposite > aligned)) continue;
+      const c = TRAFFIC_CAT[p.iconCategory] || TRAFFIC_CAT[0];
+      const events = Array.from(new Set((p.events || []).map((e) => e && e.description).filter(Boolean)));
+      const aS = Math.min.apply(null, hits), aE = Math.max.apply(null, hits);
+      const at = idx.pointAt(aS);
+      out.push({
+        id, cat: c.cat, label: c.label, desc: events.join(' · '), roads: p.roadNumbers || [], from: p.from || '', to: p.to || '',
+        delayS: Number(p.delay) || 0, lengthM: Number(p.length) || 0, magnitude: Number(p.magnitudeOfDelay) || 0,
+        start: p.startTime || null, end: p.endTime || null, validity: p.timeValidity || 'present',
+        alongStart: aS, alongEnd: aE, lat: at[0], lon: at[1], coords: pts, rel: pts.length === 1 ? 'vicino' : 'certo',
+      });
+    }
+    return out.sort((x, y) => x.alongStart - y.alongStart);
+  }
+
+  /*
+   * Stato di una segnalazione quando passa il mezzo:
+   *   'attivo' (vale al passaggio), 'ora' (segnalata adesso, ma passi tra più di 3 ore),
+   *   'futuro' (comincia dopo il passaggio), 'finito' (finisce prima del passaggio)
+   */
+  function incidentStatus(inc, passMs, nowMs) {
+    const now = nowMs || Date.now();
+    const pass = passMs == null ? now : passMs;
+    const s = Date.parse(inc.start || ''), e = Date.parse(inc.end || '');
+    let state;
+    if (isFinite(e) && pass > e) state = 'finito';
+    else if (isFinite(s) && pass < s) state = 'futuro';
+    else if (TRANSIENT.includes(inc.cat) && !isFinite(e)) state = pass - now > 3 * 3600e3 ? 'ora' : 'attivo';
+    else state = 'attivo';
+    return { state, severity: state === 'attivo' ? (inc.cat === 'chiusura' ? 'red' : 'amber') : 'info' };
+  }
+
+  /* ritardo totale delle segnalazioni in corso ora sul percorso, in secondi */
+  function trafficDelay(items, nowMs) {
+    let t = 0;
+    for (const x of items || []) {
+      if (x.rel !== 'certo' || x.validity === 'future') continue;
+      if (incidentStatus(x, nowMs, nowMs).state === 'attivo') t += x.delayS || 0;
+    }
+    return t;
+  }
+
+  /* ------------------------------------------------------------------ */
   /* Strade percorse, riconosciute per identificativo                    */
   /* ------------------------------------------------------------------ */
   /*
@@ -1909,6 +2015,7 @@
     planTrip, fmtDur, fmtDist, fmtClock, fmtNum, stopLetter, parseCoords,
     buildGpx, encodeShare, decodeShare, normName, matchPermit, groupPermits,
     tileKey, tilesAround, tilesForCoords, pointInRings, coordsCovered, tileToElements,
-    PARK_NEAR, PARK_FAR, ringArea, parkingKind, pickParkings, nearOfficial, blockersNear, makeRouteWays, avoidPoints, mergeAvoid, walkEstimate,
+    PARK_NEAR, PARK_FAR, ringArea, parkingKind, pickParkings, nearOfficial, blockersNear, makeRouteWays,
+    trafficBoxes, matchIncidents, incidentStatus, trafficDelay, avoidPoints, mergeAvoid, walkEstimate,
   };
 });
