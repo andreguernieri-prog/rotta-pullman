@@ -1802,6 +1802,15 @@
     return { near, far, generic };
   }
 
+  /* parcheggi e punti di discesa ufficiali entro radiusM dall'arrivo, dal più vicino */
+  function nearOfficial(list, dest, radiusM) {
+    return (list || [])
+      .map((p) => Object.assign({}, p, { d: haversine([dest.lat, dest.lon], [p.lat, p.lon]) }))
+      .filter((p) => p.d <= (radiusM || 15000))
+      .sort((a, b) => a.d - b.d)
+      .slice(0, 8);
+  }
+
   /* ------------------------------------------------------------------ */
   /* Permessi per i bus nei comuni                                       */
   /* ------------------------------------------------------------------ */
@@ -1853,6 +1862,6 @@
     planTrip, fmtDur, fmtDist, fmtClock, fmtNum, stopLetter, parseCoords,
     buildGpx, encodeShare, decodeShare, normName, matchPermit, groupPermits,
     tileKey, tilesAround, tilesForCoords, pointInRings, coordsCovered, tileToElements,
-    PARK_NEAR, PARK_FAR, ringArea, parkingKind, pickParkings, blockersNear, avoidPoints, mergeAvoid, walkEstimate,
+    PARK_NEAR, PARK_FAR, ringArea, parkingKind, pickParkings, nearOfficial, blockersNear, avoidPoints, mergeAvoid, walkEstimate,
   };
 });

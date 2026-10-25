@@ -473,6 +473,11 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 }
 .pk-marker { background: #1d4f9c; font-size: 17px; line-height: .9; text-align: center; }
 .pk-marker small { display: block; font-size: 7.5px; letter-spacing: .05em; }
+.pk-marker.off { background: #0b6b3a; font-size: 13px; }
+.pk.off .pk-icon { background: #0b6b3a; font-size: 15px; }
+.sev-off-bg { background: #dff1e6; color: #0b6b3a; }
+:root[data-theme="dark"] .sev-off-bg { background: #143524; color: #8fd6ab; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .sev-off-bg { background: #143524; color: #8fd6ab; } }
 .pk-marker.gen { background: #fff; color: #1d4f9c; border: 2px dashed #1d4f9c; }
 .me-dot { width: 18px; height: 18px; border-radius: 50%; background: #2a7de1; border: 3px solid #fff; box-shadow: 0 0 0 6px rgba(42,125,225,.25); }
 

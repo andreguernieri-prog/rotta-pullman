@@ -258,11 +258,11 @@
         titolo: 'Città Alta chiusa ai mezzi lunghi',
         sintesi: 'Secondo ATB, Città Alta è vietata ai veicoli più lunghi di 10,5 m e più alti di 3 m. Per i gruppi in pullman c\'è il servizio Bergamo Easy Access.',
         passi: [
-          'Parcheggia nell\'area per pullman di via Rovelli (Bergamo Easy Access, gestita da ATB), vicino alla funicolare.',
+          'Dal 1° novembre 2024 il parcheggio di via Rovelli non è più usato per i pullman: l\'area indicata dal Comune è in via Pietro Spino, aperta tutti i giorni tranne quelli di mercato.',
           'Sali a Città Alta con la funicolare o con il trasferimento in bus di ATB.',
           'Per una discesa veloce dei passeggeri c\'è la piazzola dei bus urbani in viale Vittorio Emanuele II 34.',
         ],
-        costi: 'Sosta in via Rovelli: circa 40 € fino a 4 ore, 70 € oltre.',
+        costi: 'Tariffe della sosta e dei trasferimenti: verifica sul sito ATB. Per salire a Città Alta valgono limiti di 3,5 m di altezza e 10,5 m di lunghezza.',
         link: [{ testo: 'Servizi turistici, ATB Bergamo', url: 'https://atb.bergamo.it/en/other-services/tourist-services' }],
         affidabilita: 'parziale',
       },
@@ -280,6 +280,86 @@
         link: [{ testo: 'Comune di Amalfi', url: 'https://www.comune.amalfi.sa.it/' }],
         affidabilita: 'parziale',
       },
+    ],
+
+    /*
+     * Parcheggi, terminal e punti di salita e discesa ufficiali per i bus turistici, raccolti dai siti
+     * dei comuni e delle aziende che li gestiscono il 25 ottobre 2026. L'app li mostra quando l'arrivo
+     * è entro 15 km. Coordinate da OpenStreetMap; "lungo: true" se l'area occupa un tratto di strada.
+     *   tipo: 'sosta' (parcheggio), 'terminal' (parcheggio con check point o servizi), 'discesa' (solo salita e discesa)
+     */
+    parcheggiVerificati: '2026-10-25',
+    fontiParcheggi: {
+      roma: { testo: 'Roma Servizi per la Mobilità, aree di sosta per bus turistici', url: 'https://romamobilita.it/servizi-al-pubblico/permessi-a/' },
+      firenze: { testo: 'Servizi alla Strada, parcheggi e salite/discese', url: 'https://www.serviziallastrada.it/servizi-al-turista/autorizzazioni-circolazione-e-sosta-autobus/parcheggi-salitediscese' },
+      venezia: { testo: 'AVM, ZTL bus e sosta', url: 'https://avm.avmspa.it/it/content/tariffe-ztl-bus-0' },
+      milano: { testo: 'Comune di Milano, aree di sosta per bus turistici', url: 'https://www.comune.milano.it/en/servizi/mobilita/aree-di-sosta-per-bus-turistici' },
+      napoli: { testo: 'ANM, aree di sosta per bus turistici', url: 'https://www.anm.it/index.php?option=com_content&task=view&id=4084&Itemid=323' },
+      verona: { testo: 'AMT3, parcheggi per bus turistici', url: 'https://www.amt3.it/parcheggi-verona/parcheggi-bus-turistici/' },
+      siena: { testo: 'Si.Ge.Ri.Co., parcheggio e attracchi dei bus turistici', url: 'https://sigericospa.it/en/tourist-bus-parking-area/' },
+      pisa: { testo: 'Pisamo, parcheggio di via Pietrasantina', url: 'https://pisamo.it/2022/11/02/bus-turistici-informativa-rilascio-nulla-osta-ed-autorizzazioni-tpl-anno-2023-parcheggio-pietrasantina/' },
+      bologna: { testo: 'Bologna Welcome, Autostazione e accoglienza bus turistici', url: 'https://www.bolognawelcome.com/it/altro/altro/autostazione---accoglienza-bus-turistici' },
+      torino: { testo: 'Turismo Torino, con i bus turistici', url: 'https://turismotorino.org/en/visit/plan-your-trip/getting-around/by-tourist-buses' },
+      lucca: { testo: 'Comune di Lucca, check point bus turistici', url: 'https://www.comune.lucca.it/punto_contatto/check-point-bus-turistici/' },
+      perugia: { testo: 'Comune di Perugia, bus terminal', url: 'https://turismo.comune.perugia.it/pagine/bus-terminal' },
+      bergamo: { testo: 'ATB Bergamo, servizi turistici', url: 'https://www.atb.bergamo.it/altri-servizi/servizi-turistici' },
+      amalfi: { testo: 'Comune di Amalfi, BusPass', url: 'https://www.comune.amalfi.sa.it/buspass/news.asp?l=1' },
+    },
+    parcheggi: [
+      { citta: 'roma', nome: 'Osteria del Curato (via Vincenzo Giudice)', tipo: 'sosta', lat: 41.843147, lon: 12.588834, nota: 'Sosta lunga, fino a 24 ore, nell\'area attrezzata vicino al nodo Anagnina.' },
+      { citta: 'roma', nome: 'Ponte Mammolo (via delle Messi d\'Oro)', tipo: 'sosta', lat: 41.923352, lon: 12.557707, lungo: true, nota: 'Sosta lunga, fino a 24 ore, vicino alla metro B.' },
+      { citta: 'roma', nome: 'Laurentina (via Francesco de Suppè)', tipo: 'sosta', lat: 41.825633, lon: 12.481986, nota: 'Sosta lunga, fino a 24 ore, vicino alla metro B.' },
+      { citta: 'roma', nome: 'Lungotevere Testaccio', tipo: 'sosta', lat: 41.878324, lon: 12.47084, lungo: true, nota: 'Sosta oraria, fino a 3 ore.' },
+      { citta: 'roma', nome: 'Via Caio Cestio', tipo: 'sosta', lat: 41.876282, lon: 12.478973, nota: 'Sosta oraria, fino a 3 ore.' },
+      { citta: 'roma', nome: 'Piazzale dei Partigiani', tipo: 'discesa', lat: 41.873683, lon: 12.484525, nota: 'Sosta breve, fino a 15 minuti, per salita e discesa.' },
+      { citta: 'roma', nome: 'Via Pinciana', tipo: 'discesa', lat: 41.910486, lon: 12.49009, lungo: true, nota: 'Sosta breve, fino a 15 minuti, per salita e discesa (Villa Borghese).' },
+
+      { citta: 'firenze', nome: 'Piazzale Michelangelo', tipo: 'discesa', lat: 43.762828, lon: 11.264993, nota: 'Salita e discesa a qualsiasi ora, sosta massima 20 minuti. Accesso da viale Galileo e viale Michelangiolo.' },
+      { citta: 'firenze', nome: 'Piazza Savonarola', tipo: 'discesa', lat: 43.781843, lon: 11.26707, nota: 'Solo discesa, dalle 8 alle 20, sosta massima 5 minuti: la salita è vietata.' },
+      { citta: 'firenze', nome: 'Largo Vincenzo Giudice', tipo: 'discesa', lat: 43.779761, lon: 11.247878, nota: 'Salita e discesa a qualsiasi ora, sosta massima 5 minuti, lato caserma della Guardia di Finanza.' },
+      { citta: 'firenze', nome: 'Piazza Vittorio Veneto', tipo: 'discesa', lat: 43.775641, lon: 11.235632, nota: 'Salita e discesa, con itinerari di accesso obbligatori indicati da SAS.' },
+      { citta: 'firenze', nome: 'Piazzale Campioni del \'56', tipo: 'sosta', lat: 43.77955, lon: 11.28357, nota: 'Area di sosta per bus a Campo di Marte.' },
+      { citta: 'firenze', nome: 'Viale XI Agosto (Guidoni)', tipo: 'sosta', lat: 43.804992, lon: 11.215587, lungo: true, nota: 'Area di sosta per bus vicino alla fermata Guidoni della tramvia T2.' },
+
+      { citta: 'venezia', nome: 'Isola Nova del Tronchetto', tipo: 'sosta', lat: 45.443, lon: 12.30565, nota: 'Parcheggio per bus, collegato a Piazzale Roma dal People Mover. Consigliato in alta stagione.' },
+      { citta: 'venezia', nome: 'Piazzale Roma', tipo: 'terminal', lat: 45.438007, lon: 12.318851, nota: 'Terminal dei bus, spesso congestionato in alta stagione.' },
+
+      { citta: 'milano', nome: 'Foro Buonaparte (Castello)', tipo: 'discesa', lat: 45.47269, lon: 9.18125, nota: 'Stalli a rotazione rapida: solo il tempo di salita e discesa.' },
+      { citta: 'milano', nome: 'Piazza della Repubblica', tipo: 'discesa', lat: 45.479717, lon: 9.198916, nota: 'Area ai margini della Cerchia dei Bastioni: controlla sull\'elenco del Comune se è a rotazione rapida o a sosta oraria.' },
+      { citta: 'milano', nome: 'Bastioni di Porta Venezia', tipo: 'sosta', lat: 45.47546, lon: 9.20195, nota: 'Area ai margini della Cerchia dei Bastioni, a pagamento: controlla orari e posti sull\'elenco del Comune.' },
+
+      { citta: 'napoli', nome: 'Via Nuova Marina', tipo: 'sosta', lat: 40.845228, lon: 14.260908, lungo: true, nota: 'Area di sosta per bus turistici (ordinanza del 2025): si paga online su smartmobility.anm.it.' },
+      { citta: 'napoli', nome: 'Viale Anton Dohrn', tipo: 'sosta', lat: 40.83261, lon: 14.230821, lungo: true, nota: 'Area di sosta per bus turistici, vicino alla Villa Comunale: si paga online su smartmobility.anm.it.' },
+      { citta: 'napoli', nome: 'Viale Virgilio (Posillipo)', tipo: 'sosta', lat: 40.801869, lon: 14.184044, lungo: true, nota: 'Area di sosta per bus turistici: si paga online su smartmobility.anm.it.' },
+
+      { citta: 'verona', nome: 'Terminal bus del Parcheggio Centro (via Campo Marzo)', tipo: 'terminal', lat: 45.4337, lon: 11.0023, nota: 'Una delle due aree di sosta dentro la ZTL Bus, a pagamento. Serve il pass ZTL Bus.' },
+      { citta: 'verona', nome: 'Parcheggio C dello Stadio (via dello Sport)', tipo: 'sosta', lat: 45.434562, lon: 10.965291, nota: 'Sosta compresa nel pass ZTL Bus; qui c\'è anche la cassa automatica del pass.' },
+
+      { citta: 'siena', nome: 'Parcheggio Il Fagiolone', tipo: 'terminal', lat: 43.31569, lon: 11.31651, nota: 'Parcheggio dei bus e check point della ZTL Bus, a pagamento.' },
+      { citta: 'siena', nome: 'Attracco di Piazza Amendola (Porta Camollia)', tipo: 'discesa', lat: 43.328184, lon: 11.322164, nota: 'Salita e discesa su prenotazione, massimo 15 minuti, 3 posti.' },
+
+      { citta: 'pisa', nome: 'Parcheggio di via Pietrasantina', tipo: 'terminal', lat: 43.727243, lon: 10.38963, lungo: true, nota: 'Parcheggio dei bus turistici e check point della ZTL Bus, a circa 10 minuti a piedi dalla Torre.' },
+
+      { citta: 'bologna', nome: 'Autostazione (piazza XX Settembre 6)', tipo: 'terminal', lat: 44.5043, lon: 11.3463, nota: 'Sosta a pagamento su prenotazione; salita e discesa fino a 15 minuti. Posti ridotti per lavori: verifica la disponibilità.' },
+      { citta: 'bologna', nome: 'Porta San Mamolo', tipo: 'discesa', lat: 44.486962, lon: 11.338394, nota: 'Salita e discesa fino a 20 minuti.' },
+
+      { citta: 'torino', nome: 'Lungo Dora Colletta', tipo: 'sosta', lat: 45.074042, lon: 7.714615, lungo: true, nota: 'Sosta gratuita.' },
+      { citta: 'torino', nome: 'Via Ippolito Nievo', tipo: 'sosta', lat: 45.077901, lon: 7.710562, nota: 'Sosta gratuita.' },
+      { citta: 'torino', nome: 'Piazza d\'Armi', tipo: 'sosta', lat: 45.043828, lon: 7.652774, nota: 'Sosta gratuita.' },
+      { citta: 'torino', nome: 'Viale Primo Maggio (Giardini Reali)', tipo: 'sosta', lat: 45.072143, lon: 7.689974, nota: 'Sosta a pagamento; anche salita e discesa.' },
+      { citta: 'torino', nome: 'Viale Boiardo (Torino Esposizioni)', tipo: 'sosta', lat: 45.048147, lon: 7.683465, nota: 'Sosta a pagamento.' },
+      { citta: 'torino', nome: 'Piazza Castello (Teatro Regio)', tipo: 'discesa', lat: 45.070592, lon: 7.687956, nota: 'Fermata breve per salita e discesa davanti al Teatro Regio.' },
+
+      { citta: 'lucca', nome: 'Parcheggio Palatucci (via delle Tagliate di Sant\'Anna)', tipo: 'terminal', lat: 43.8369, lon: 10.493684, nota: 'Terminal e check point dei bus turistici; qui il bus aspetta il gruppo.' },
+      { citta: 'lucca', nome: 'Piazzale Boccherini', tipo: 'discesa', lat: 43.842166, lon: 10.495279, nota: 'Punto di discesa dei passeggeri.' },
+      { citta: 'lucca', nome: 'Porta Elisa', tipo: 'discesa', lat: 43.843095, lon: 10.514089, nota: 'Punto di discesa dei passeggeri.' },
+
+      { citta: 'perugia', nome: 'Pian di Massiano', tipo: 'terminal', lat: 43.10909, lon: 12.3615, nota: 'Parcheggio dei bus turistici, circa 30 posti a pagamento, e partenza del Minimetrò per il centro. Uscita del raccordo: Madonna Alta.' },
+
+      { citta: 'bergamo', nome: 'Via Pietro Spino', tipo: 'sosta', lat: 45.679543, lon: 9.669623, nota: 'Area di sosta per bus turistici, tutti i giorni tranne quelli di mercato.' },
+      { citta: 'bergamo', nome: 'Viale Vittorio Emanuele II 34', tipo: 'discesa', lat: 45.698961, lon: 9.664991, nota: 'Fermata dei bus urbani: solo il tempo di far scendere i passeggeri.' },
+
+      { citta: 'amalfi', nome: 'Area Flavio Gioia (Amalfi)', tipo: 'discesa', lat: 40.633808, lon: 14.602779, nota: 'Carico e scarico su prenotazione obbligatoria (BusPass); vietato ai bus oltre 10,36 m.' },
     ],
   };
 })(typeof self !== 'undefined' ? self : this);

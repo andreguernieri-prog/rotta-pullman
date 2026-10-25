@@ -1224,7 +1224,8 @@
       }
       if (my !== seq) return;
       const pk = C.pickParkings(els, dest);
-      const groups = [{ stop: last, items: pk.near, far: pk.far, generic: pk.generic }];
+      const official = C.nearOfficial((window.RPPermessi || {}).parcheggi, dest, 15000);
+      const groups = [{ stop: last, items: pk.near, far: pk.far, generic: pk.generic, official }];
       state.parkings = { status: 'done', groups };
     } catch (e) {
       if (my !== seq || e.code === 'aborted') return;
@@ -1507,6 +1508,12 @@
     const p = state.parkings;
     if (!p || p.status !== 'done') return;
     for (const g of p.groups) {
+      for (const it of g.official || []) {
+        const icon = L.divIcon({ className: '', html: `<div class="pk-marker off">${it.tipo === 'discesa' ? 'S/D' : 'P'}<small>UFF.</small></div>`, iconSize: [30, 30], iconAnchor: [15, 15], popupAnchor: [0, -14] });
+        L.marker([it.lat, it.lon], { icon, zIndexOffset: 250, title: it.nome + ' (ufficiale)' })
+          .bindPopup(() => popupBox(it.nome, `${OFFICIAL_LABEL[it.tipo]} · ufficiale`, h('span', { text: it.nota })))
+          .addTo(lg.parks);
+      }
       for (const it of g.items.concat(g.far || [], g.generic || [])) {
         const gen = it.kind === 'generico';
         const icon = L.divIcon({ className: '', html: `<div class="pk-marker${gen ? ' gen' : ''}">${PARK_MARK[it.kind]}</div>`, iconSize: [30, 30], iconAnchor: [15, 15], popupAnchor: [0, -14] });
@@ -2062,6 +2069,16 @@
       const s = r.stops[g.stop];
       const far = g.far || [], generic = g.generic || [];
       ul.append(h('li', { class: 'pk-group', text: `Arrivo · ${s.label || 'destinazione'}` }));
+      const official = g.official || [];
+      if (official.length) {
+        const P = window.RPPermessi || {};
+        const fonte = P.fontiParcheggi && P.fontiParcheggi[official[0].citta];
+        ul.append(h('li', { class: 'pk-sub', text: 'Parcheggi e fermate ufficiali per i bus' }));
+        for (const it of official) ul.append(officialItem(it, P.fontiParcheggi && P.fontiParcheggi[it.citta]));
+        ul.append(h('li', { class: 'hint' }, `Dai siti ufficiali, verificati il ${fmtDay(P.parcheggiVerificati)}. Orari, tariffe e prenotazioni cambiano: controlla la fonte prima di partire.`,
+          fonte ? ' ' : null, fonte ? h('a', { href: fonte.url, target: '_blank', rel: 'noopener' }, fonte.testo) : null));
+        ul.append(h('li', { class: 'pk-sub', text: 'Da OpenStreetMap' }));
+      }
       if (g.items.length) for (const it of g.items) ul.append(parkingItem(it));
       else ul.append(h('li', { class: 'none' }, 'Nessun parcheggio per bus segnato su OpenStreetMap entro 1 km dall\'arrivo.'));
       if (far.length) {
@@ -2079,7 +2096,33 @@
         h('span', { text: hasBus ? 'Conosci un altro parcheggio adatto ai bus qui vicino?' : 'Conosci un parcheggio adatto ai bus qui vicino?' }),
         h('a', { href: `https://www.openstreetmap.org/note/new#map=17/${s.lat.toFixed(6)}/${s.lon.toFixed(6)}`, target: '_blank', rel: 'noopener' }, 'Segnala un parcheggio bus'),
         h('span', { class: 'hz-meta', text: 'Si apre una nota su OpenStreetMap: scrivi dov\'è, quanti pullman ci stanno e se è a pagamento. Un volontario la aggiunge alla mappa, per tutti.' })));
+      ul.append(h('li', { class: 'pk-report' },
+        h('span', { text: 'Cerca anche su Park Your Bus, l\'app con i parcheggi per pullman in Europa.' }),
+        h('a', { href: parkYourBusUrl(), target: '_blank', rel: 'noopener' }, 'Apri Park Your Bus'),
+        h('span', { class: 'hz-meta', text: 'Si apre la pagina dell\'app nello store del telefono: lì cerchi tu la località, l\'app non riceve dati da Rotta Pullman.' })));
     }
+  }
+
+  const OFFICIAL_LABEL = { sosta: 'Sosta', terminal: 'Terminal e check point', discesa: 'Salita e discesa' };
+  function officialItem(it, fonte) {
+    const at = `${it.lat.toFixed(6)},${it.lon.toFixed(6)}`;
+    return h('li', { class: 'pk off' },
+      h('span', { class: 'pk-icon', 'aria-hidden': 'true' }, it.tipo === 'discesa' ? 'S/D' : 'P'),
+      h('div', { class: 'hz-body' },
+        h('span', { class: 'hz-title' }, it.nome, h('span', { class: 'sev sev-off-bg', text: OFFICIAL_LABEL[it.tipo] })),
+        h('span', { class: 'hz-meta', text: `a ${C.fmtDist(it.d)} dall'arrivo` + (it.lungo ? ' · lungo la via' : '') }),
+        h('span', { text: it.nota }),
+        h('span', { class: 'hz-links' },
+          h('button', { type: 'button', onclick: () => flyTo(it.lat, it.lon, 17) }, 'Mostra sulla mappa'),
+          h('a', { href: `https://www.google.com/maps/dir/?api=1&destination=${at}`, target: '_blank', rel: 'noopener' }, 'Naviga'),
+          fonte ? h('a', { href: fonte.url, target: '_blank', rel: 'noopener' }, 'Fonte ufficiale') : null)));
+  }
+
+  /* Park Your Bus: pagina dell'app nello store (iPhone: App Store; Android: ricerca su Google Play) */
+  function parkYourBusUrl() {
+    const ua = navigator.userAgent || '';
+    if (/android/i.test(ua)) return 'https://play.google.com/store/search?q=ParkYourBus&c=apps';
+    return 'https://apps.apple.com/app/id1044449061';
   }
 
   function parkingItem(it) {

@@ -321,7 +321,7 @@ async function setupRoutes(context) {
   await step('al primo accesso calcola il viaggio di esempio', async () => {
     await p.waitForSelector('#res:not([hidden])', { timeout: 15000 });
     await p.waitForSelector('#check-banner.red', { timeout: 15000 });
-    await p.waitForFunction(() => document.querySelectorAll('#parkings .pk').length > 0);
+    await p.waitForFunction(() => document.querySelectorAll('#parkings .pk:not(.off)').length > 0);
     assert.match(await p.textContent('#sum-km'), /km$/);
     assert.equal(await p.locator('#hazards .hz').count(), 3);
     const tl = await p.textContent('#timeline');
@@ -427,7 +427,14 @@ async function setupRoutes(context) {
     assert.equal(lastQ[0].radius, 5000);
     assert.ok(Math.abs(lastQ[0].lat - 43.7629) < 0.01, 'cerca intorno all\'arrivo');
     assert.doesNotMatch(await p.textContent('#parkings'), /troppo lontano|Bologna/);
-    assert.equal(await p.locator('#parkings .pk').count(), 2);
+    // parcheggi e fermate ufficiali del Comune, con la fonte; collegamento a Park Your Bus
+    const offTxt = await p.textContent('#parkings');
+    assert.match(offTxt, /Parcheggi e fermate ufficiali per i bus.*Piazzale Michelangelo.*Salita e discesa.*sosta massima 20 minuti/s);
+    assert.ok(await p.locator('#parkings .pk.off').count() >= 4);
+    assert.match(await p.getAttribute('#parkings .pk.off a:has-text("Fonte ufficiale")', 'href'), /serviziallastrada\.it/);
+    assert.match(await p.getAttribute('#parkings a:has-text("Apri Park Your Bus")', 'href'), /apps\.apple\.com|play\.google\.com/);
+    assert.ok(await p.locator('.pk-marker.off').count() >= 4);
+    assert.equal(await p.locator('#parkings .pk:not(.off)').count(), 2);
   });
 
   await step('esportazione GPX', async () => {
@@ -470,7 +477,7 @@ async function setupRoutes(context) {
     watch(q, 'parcheggi 429');
     await q.goto(base);
     await step('parcheggi: server occupato, attesa e risultato senza errori', async () => {
-      await q.waitForFunction(() => document.querySelectorAll('#parkings .pk').length > 0, null, { timeout: 20000 });
+      await q.waitForFunction(() => document.querySelectorAll('#parkings .pk:not(.off)').length > 0, null, { timeout: 20000 });
       assert.doesNotMatch(await q.textContent('#parkings'), /non riuscita/);
       assert.equal(mocks.parkingFail, 0);
       await q.waitForSelector('#check-banner.red', { timeout: 20000 });
@@ -523,13 +530,13 @@ async function setupRoutes(context) {
     await q.goto(base);
     await step('dati scaricati: controllo e parcheggi senza chiamare Overpass', async () => {
       await q.waitForSelector('#check-banner.red', { timeout: 20000 });
-      await q.waitForFunction(() => document.querySelectorAll('#parkings .pk').length > 0, null, { timeout: 20000 });
+      await q.waitForFunction(() => document.querySelectorAll('#parkings .pk:not(.off)').length > 0, null, { timeout: 20000 });
       assert.equal(mocks.corridorCalls, 0, 'nessuna richiesta Overpass per il controllo');
       assert.equal(mocks.parkingQueries.length, 0, 'nessuna richiesta Overpass per i parcheggi');
       assert.ok(mocks.datiRichieste >= 2);
       assert.equal(await q.locator('#hazards .hz').count(), 3);
       assert.match(await q.textContent('#check-banner'), /Dati OpenStreetMap del 25 ottobre 2026\./);
-      assert.equal(await q.locator('#parkings .pk').count(), 2);
+      assert.equal(await q.locator('#parkings .pk:not(.off)').count(), 2);
       assert.doesNotMatch(await q.textContent('#parkings'), /troppo lontano/);
       // le pause usano le aree di servizio dei dati scaricati
       await q.click('#tab-viaggio');
@@ -736,7 +743,7 @@ async function setupRoutes(context) {
       assert.match(txt, /Parcheggi grandi entro 1 km, non segnati per bus.*Piazzale del mercato.*Da verificare.*circa 3\.600 m².*gratuito/s);
       assert.doesNotMatch(txt, /Parcheggio piccolo/);
       assert.equal(await q.locator('.pk-marker.gen').count(), 1);
-      assert.equal(await q.locator('.pk-marker:not(.gen)').count(), 1);
+      assert.equal(await q.locator('.pk-marker:not(.gen):not(.off)').count(), 1);
       assert.match(await q.getAttribute('.pk-report a', 'href'), /openstreetmap\.org\/note\/new#map=17\//);
       await q.locator('#parkings').scrollIntoViewIfNeeded();
       await q.waitForTimeout(300);

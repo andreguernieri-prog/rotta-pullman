@@ -642,3 +642,26 @@ test('percorso non trovato: strade chiuse al mezzo intorno alla tappa (caso Orri
   assert.ok(via.dist < 60);
   assert.ok(b[0].dist <= b[1].dist, 'dalla più vicina');
 });
+
+test('parcheggi ufficiali: archivio coerente e vicini all\'arrivo', () => {
+  global.self = global;
+  require('../js/permessi.js');
+  const P = global.RPPermessi;
+  assert.ok(P.parcheggi.length >= 30);
+  for (const x of P.parcheggi) {
+    assert.ok(P.fontiParcheggi[x.citta], 'fonte per ' + x.nome);
+    assert.ok(/^https:\/\//.test(P.fontiParcheggi[x.citta].url));
+    assert.ok(['sosta', 'terminal', 'discesa'].includes(x.tipo), x.nome);
+    assert.ok(x.lat > 36 && x.lat < 47.5 && x.lon > 6.5 && x.lon < 18.6, 'in Italia: ' + x.nome);
+    assert.ok(x.nome && x.nota, x.nome);
+  }
+  // ogni voce è vicina alle altre della stessa città (niente coordinate finite altrove)
+  for (const x of P.parcheggi) {
+    const same = P.parcheggi.filter((y) => y.citta === x.citta && y !== x);
+    if (same.length) assert.ok(Math.min(...same.map((y) => C.haversine([x.lat, x.lon], [y.lat, y.lon]))) < 15000, x.nome);
+  }
+  const near = C.nearOfficial(P.parcheggi, { lat: 43.7629, lon: 11.2650 }, 15000);
+  assert.equal(near[0].nome, 'Piazzale Michelangelo');
+  assert.ok(near.every((x) => x.citta === 'firenze'));
+  assert.equal(C.nearOfficial(P.parcheggi, { lat: 46.17, lon: 10.07 }, 15000).length, 0); // Teglio
+});
