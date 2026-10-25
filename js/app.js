@@ -227,6 +227,7 @@
     route: L.layerGroup().addTo(map),
     breaks: L.layerGroup().addTo(map),
     parks: L.layerGroup().addTo(map),
+    places: L.layerGroup().addTo(map),
     traffic: L.layerGroup().addTo(map),
     hazards: L.layerGroup().addTo(map),
     stops: L.layerGroup().addTo(map),
@@ -963,6 +964,9 @@
       runPermits(my, signal);
       runTomTom(my, signal);
       runTraffic(my, signal);
+      state.places = null;
+      lg.places.clearLayers();
+      if ($('#places-wrap').open) runPlaces(my, signal); else renderPlaces();
     } catch (e) {
       if (my !== seq || e.code === 'aborted') return;
       if (avoiding && (e.code === 'noroute' || e.code === 'nopoint')) showError('Non c\'è un percorso per questo mezzo che eviti quel punto: resta il percorso di prima.');
@@ -1702,7 +1706,233 @@
     $('#res-empty').hidden = has;
     $('#res').hidden = !has;
     if (!has) return;
-    renderSummary(); renderRouteNotes(); renderCheck(); renderPermits(); renderTimeline(); renderHazards(); renderTraffic(); renderParkings(); renderSteps(); renderMini();
+    renderSummary(); renderRouteNotes(); renderCheck(); renderPermits(); renderTimeline(); renderHazards(); renderTraffic(); renderParkings(); renderPlaces(); renderSteps(); renderMini();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Luoghi e attrazioni lungo il percorso                               */
+  /* ------------------------------------------------------------------ */
+  const PLACE_CATS = ['museo', 'castello', 'archeologia', 'chiesa', 'natura', 'parco', 'monumento', 'attrazione'];
+  const PLACE_CHIP = { museo: 'Musei', castello: 'Castelli', archeologia: 'Archeologia', chiesa: 'Chiese', natura: 'Natura', parco: 'Parchi e zoo', monumento: 'Monumenti', attrazione: 'Altre attrazioni' };
+  const PL_GLYPH = {
+    museo: '<path d="M4 9l8-4 8 4z M6 10h2v7H6z M11 10h2v7h-2z M16 10h2v7h-2z M4 18h16v2H4z" fill="#fff"/>',
+    castello: '<path d="M5 20V9h2v2h2V9h2v2h2V9h2v2h2V9h2v11h-5v-4h-4v4z" fill="#fff"/>',
+    archeologia: '<path d="M8 20V8h3l1 2 1-2h3v12z M6 20h12v1.5H6z" fill="#fff"/>',
+    chiesa: '<path d="M11 3h2v4h3v2h-3v3l5 3v6H6v-6l5-3V9H8V7h3z" fill="#fff"/>',
+    natura: '<path d="M3 19l6-9 4 5 2-3 6 7z" fill="#fff"/>',
+    parco: '<path d="M12 4l2.4 5 5.6.6-4.2 3.8 1.2 5.6L12 16.3 7 19l1.2-5.6L4 9.6 9.6 9z" fill="#fff"/>',
+    monumento: '<path d="M11 3h2l1 14H10z M7 18h10v3H7z" fill="#fff"/>',
+  };
+  const plSvg = (cat) => `<svg viewBox="0 0 24 24" aria-hidden="true">${PL_GLYPH[cat] || PL_GLYPH.parco}</svg>`;
+  const PLACE_GROUP = 10;
+  state.placeMinutes = 20;
+  state.placeCats = new Set(PLACE_CATS);
+  state.placeShow = true;
+  const wikiCache = new Map();
+  let plPopup = null;
+
+  $('#places-wrap').addEventListener('toggle', () => {
+    if ($('#places-wrap').open && state.route && (!state.places || state.places.route !== state.route)) runPlaces(seq, workCtrl ? workCtrl.signal : undefined);
+  });
+
+  async function runPlaces(my, signal) {
+    const r = state.route;
+    if (!r) return;
+    const minutes = state.placeMinutes;
+    state.places = { status: 'loading', route: r, minutes, all: [] };
+    renderPlaces();
+    try {
+      const dati = await API.dataIndex();
+      if (my !== seq) return;
+      if (!dati || !dati.luoghi) throw new Error('Luoghi e attrazioni sono disponibili con i dati scaricati ogni settimana, solo in Italia. Riprova più tardi.');
+      const radius = minutes * 900; // in linea d'aria: 20 minuti di andata → al massimo 18 km
+      const keys = C.tilesForCoords(C.simplify(r.coords, 100), dati.riquadroLuoghi || 0.5, radius);
+      const tiles = await API.dataPlaces(dati, keys, signal);
+      if (my !== seq) return;
+      const picked = C.pickPlaces(C.placeCandidates(tiles.flatMap(C.placesFromTile), r.index, radius), 40);
+      await placeTimes(picked, r, signal, my);
+      if (my !== seq) return;
+      state.places = { status: 'done', route: r, minutes, all: picked };
+    } catch (e) {
+      if (e.code === 'aborted' || my !== seq) return;
+      state.places = { status: 'error', route: r, minutes, reason: e.message, all: [] };
+    }
+    drawPlaces(); renderPlaces();
+  }
+
+  /* tempo di andata in pullman dal percorso a ogni luogo (Valhalla, a gruppi di 10); senza risposta resta la stima */
+  async function placeTimes(list, r, signal, my) {
+    for (let i = 0; i < list.length; i += PLACE_GROUP) {
+      const g = list.slice(i, i + PLACE_GROUP);
+      const sources = g.map((p) => { const q = r.index.pointAt(p.along); return { lat: q[0], lon: q[1] }; });
+      try {
+        const m = await API.valhallaMatrix(sources, g, r.vehicle, r.margin, r.options, signal);
+        g.forEach((p, j) => {
+          let best = null;
+          for (const row of m) { const t = row && row[j]; if (t != null && (best == null || t < best)) best = t; }
+          p.min = best != null ? Math.max(1, Math.round(best / 60)) : null;
+          p.bus = best != null ? 'si' : 'no';
+        });
+      } catch (e) {
+        if (e.code === 'aborted') throw e;
+        g.forEach((p) => { p.min = null; p.bus = null; });
+      }
+      g.forEach((p) => { p.est = C.placeEstimateMin(p.distM); });
+      if (my !== seq) return;
+    }
+  }
+
+  function placeTime(p) { return p.bus === 'si' ? p.min : p.est; }
+  function placesShown() {
+    const pl = state.places;
+    if (!pl || pl.status !== 'done' || pl.route !== state.route) return [];
+    return pl.all.filter((p) => state.placeCats.has(p.cat) && placeTime(p) <= state.placeMinutes).slice(0, 30);
+  }
+  function placeTimeText(p) {
+    if (p.bus === 'si') return `${p.min} min di andata in pullman`;
+    return `circa ${p.est} min di andata (stima)`;
+  }
+  function placeBusTag(p) {
+    if (p.bus === 'si') return h('span', { class: 'sev sev-off-bg', text: 'Raggiungibile in pullman' });
+    if (p.bus === 'no') return h('span', { class: 'sev sev-amber-bg', text: 'Non raggiungibile in pullman' });
+    return null;
+  }
+  function wikiUrl(p) {
+    const m = /^([a-z-]{2,12}):(.+)$/.exec(p.w || '');
+    if (m) return `https://${m[1]}.wikipedia.org/wiki/${encodeURIComponent(m[2].replace(/ /g, '_'))}`;
+    return p.d ? `https://www.wikidata.org/wiki/${encodeURIComponent(p.d)}` : null;
+  }
+
+  function drawPlaces() {
+    lg.places.clearLayers();
+    if (!state.placeShow) return;
+    for (const p of placesShown()) {
+      const icon = L.divIcon({ className: '', html: `<div class="pl-marker${p.u ? ' unesco' : ''}">${plSvg(p.cat)}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] });
+      L.marker([p.lat, p.lon], { icon, zIndexOffset: 100, title: p.name }).on('click', () => openPlace(p)).addTo(lg.places);
+    }
+  }
+
+  function openPlace(p) {
+    const pad = mapPadding();
+    plPopup = L.popup({ maxWidth: 300, minWidth: 230, className: 'hz-popup', offset: [0, -10], autoPanPaddingTopLeft: pad.paddingTopLeft, autoPanPaddingBottomRight: pad.paddingBottomRight })
+      .setLatLng([p.lat, p.lon]).setContent(placeCard(p)).openOn(map);
+  }
+  function refreshPlacePopup() { if (plPopup && plPopup.isOpen()) plPopup.update(); }
+
+  function placeCard(p) {
+    const wiki = h('div', { class: 'pl-wiki' }, h('span', { class: 'hz-meta', text: p.w || p.d ? 'Cerco la descrizione su Wikipedia…' : '' }));
+    const parks = h('div', { class: 'pl-parks' }, h('span', { class: 'hz-meta', text: 'Cerco parcheggi per bus vicini…' }));
+    const showWiki = (w) => {
+      wiki.replaceChildren();
+      if (!w) { if (p.w || p.d) wiki.append(h('span', { class: 'hz-meta', text: 'Descrizione non disponibile.' })); return; }
+      if (w.image) {
+        const img = h('img', { src: w.image, alt: p.name, loading: 'lazy' });
+        img.addEventListener('load', refreshPlacePopup, { once: true });
+        wiki.append(img);
+      }
+      if (w.extract) wiki.append(h('p', { text: w.extract.length > 420 ? w.extract.slice(0, 400).replace(/\s+\S*$/, '') + '…' : w.extract }));
+      wiki.append(h('span', { class: 'hz-meta' }, 'Testo e foto: ', h('a', { href: w.url, target: '_blank', rel: 'noopener' }, 'Wikipedia'), ' (CC BY-SA).'));
+      refreshPlacePopup();
+    };
+    if (wikiCache.has(p.id)) showWiki(wikiCache.get(p.id));
+    else if (p.w || p.d) API.wikiSummary(p.w, p.d).then((w) => { wikiCache.set(p.id, w); showWiki(w); }).catch(() => showWiki(null));
+    parkingCandidates(p).then((list) => {
+      parks.replaceChildren();
+      const top = list.slice(0, 2);
+      if (!top.length) { parks.append(h('span', { class: 'hz-meta', text: 'Nessun parcheggio per bus segnato su OpenStreetMap entro 1,5 km.' })); refreshPlacePopup(); return; }
+      parks.append(h('b', { text: 'Parcheggi vicini: ' }), top.map((x) => `${parkingName(x)} (${x.kind === 'generico' ? 'da verificare, ' : ''}a ${C.fmtDist(x.d)})`).join(' · '));
+      refreshPlacePopup();
+    }).catch(() => { parks.replaceChildren(); });
+    const at = `${p.lat.toFixed(6)},${p.lon.toFixed(6)}`;
+    return h('div', { class: 'hzpop' },
+      h('div', { class: 'hzpop-head' },
+        h('span', { class: `pl-icon${p.u ? ' unesco' : ''}`, svg: plSvg(p.cat) }),
+        h('span', null, h('b', { text: p.name }), h('span', { class: 'hz-meta', text: p.label }), p.u ? h('span', { class: 'sev pl-unesco', text: 'Patrimonio UNESCO' }) : null)),
+      h('p', null, placeTimeText(p), ' ', placeBusTag(p)),
+      p.bus === 'no' ? h('p', { class: 'hz-meta', text: 'Il pullman non arriva entro 300 m dal luogo: si lascia in un parcheggio vicino e si prosegue a piedi o con i mezzi.' }) : null,
+      h('p', { class: 'hz-meta', text: `Uscita dal percorso verso il km ${C.fmtNum(p.along / 1000, 0)}, a ${C.fmtDist(p.distM)} in linea d'aria.` }),
+      wiki,
+      p.o ? h('p', { class: 'hz-meta', text: 'Orari secondo OpenStreetMap (da verificare): ' + p.o }) : null,
+      parks,
+      h('div', { class: 'hzpop-decide' }, h('button', { type: 'button', class: 'btn-secondary', onclick: () => addPlaceAsStop(p) }, 'Aggiungi come tappa')),
+      h('div', { class: 'hz-links' },
+        h('a', { href: `https://www.google.com/maps/dir/?api=1&destination=${at}`, target: '_blank', rel: 'noopener' }, 'Naviga'),
+        h('a', { href: `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${at}`, target: '_blank', rel: 'noopener' }, 'Street View'),
+        wikiUrl(p) ? h('a', { href: wikiUrl(p), target: '_blank', rel: 'noopener' }, 'Wikipedia') : null,
+        p.s ? h('a', { href: /^https?:\/\//.test(p.s) ? p.s : 'https://' + p.s, target: '_blank', rel: 'noopener' }, 'Sito') : null));
+  }
+
+  /* inserisce il luogo come tappa nel punto giusto del viaggio (visita di 60 minuti) e ricalcola */
+  function addPlaceAsStop(p) {
+    const r = state.route;
+    if (!r) return;
+    let k = 0;
+    r.legD.forEach((d, i) => { if (d <= p.along) k = i; });
+    k = Math.min(k, r.stops.length - 2);
+    const after = r.stopIdx[k];
+    const s = mkStop({ label: p.name, lat: p.lat, lon: p.lon, dwell: 60 });
+    state.stops.splice(after + 1, 0, s);
+    map.closePopup();
+    renderStops(); renderMarkers(); persist();
+    toast(`«${p.name}» aggiunto come tappa, con una visita di 60 minuti: ricalcolo il percorso…`, 5000);
+    computeRoute();
+  }
+
+  function placeItem(p) {
+    const url = wikiUrl(p);
+    return h('li', { class: 'hz pl' },
+      h('span', { class: `pl-icon${p.u ? ' unesco' : ''}`, svg: plSvg(p.cat) }),
+      h('div', { class: 'hz-body' },
+        h('span', { class: 'hz-title' }, p.name, p.u ? h('span', { class: 'sev pl-unesco', text: 'UNESCO' }) : null),
+        h('span', { class: 'hz-meta', text: `${p.label} · km ${C.fmtNum(p.along / 1000, 0)} · ${placeTimeText(p)}` }),
+        placeBusTag(p),
+        h('span', { class: 'hz-links' },
+          h('button', { type: 'button', onclick: () => { flyTo(p.lat, p.lon, 14); setTimeout(() => openPlace(p), isWide() ? 350 : 700); } }, 'Mostra sulla mappa'),
+          h('button', { type: 'button', onclick: () => addPlaceAsStop(p) }, 'Aggiungi come tappa'),
+          url ? h('a', { href: url, target: '_blank', rel: 'noopener' }, 'Wikipedia') : null)));
+  }
+
+  function renderPlaces() {
+    const box = $('#places');
+    if (!box) return;
+    box.replaceChildren();
+    $('#pl-count').textContent = '';
+    if (!state.route) return;
+    const sel = h('select', { id: 'pl-minutes', 'aria-label': 'Tempo massimo di andata' },
+      [10, 20, 30].map((m) => { const o = h('option', { value: String(m), text: `${m} minuti` }); if (m === state.placeMinutes) o.selected = true; return o; }));
+    sel.addEventListener('change', () => {
+      const m = Number(sel.value);
+      const pl = state.places;
+      state.placeMinutes = m;
+      if (pl && pl.status === 'done' && pl.route === state.route && m <= pl.minutes) { drawPlaces(); renderPlaces(); }
+      else runPlaces(seq, workCtrl ? workCtrl.signal : undefined);
+    });
+    const show = h('input', { type: 'checkbox', id: 'pl-show' });
+    show.checked = state.placeShow;
+    show.addEventListener('change', () => { state.placeShow = show.checked; drawPlaces(); });
+    box.append(
+      h('div', { class: 'pl-controls' },
+        h('label', { class: 'pl-sel', for: 'pl-minutes' }, 'Al massimo ', sel, ' di andata dal percorso'),
+        h('label', { class: 'check pl-show', for: 'pl-show' }, show, h('span', { text: 'Mostra sulla mappa' }))),
+      h('div', { class: 'pl-chips' }, PLACE_CATS.map((c) => {
+        const b = h('button', { type: 'button', class: 'pl-chip' + (state.placeCats.has(c) ? ' on' : ''), 'aria-pressed': String(state.placeCats.has(c)) }, PLACE_CHIP[c]);
+        b.addEventListener('click', () => { if (state.placeCats.has(c)) state.placeCats.delete(c); else state.placeCats.add(c); drawPlaces(); renderPlaces(); });
+        return b;
+      })));
+    const ul = h('ul', { class: 'hazards' });
+    box.append(ul);
+    const pl = state.places;
+    if (!pl || pl.route !== state.route) { ul.append(h('li', { class: 'none' }, 'Apri questa sezione per cercare i luoghi lungo il percorso.')); return; }
+    if (pl.status === 'loading') { ul.append(h('li', { class: 'none' }, 'Cerco luoghi e attrazioni lungo il percorso e calcolo i tempi di andata per il tuo pullman…')); return; }
+    if (pl.status === 'error') {
+      ul.append(h('li', { class: 'none' }, pl.reason + ' ', h('button', { type: 'button', class: 'btn-ghost', onclick: () => runPlaces(seq, workCtrl ? workCtrl.signal : undefined) }, 'Riprova')));
+      return;
+    }
+    const list = placesShown();
+    $('#pl-count').textContent = String(list.length);
+    if (!list.length) ul.append(h('li', { class: 'none' }, `Nessun luogo notevole entro ${state.placeMinutes} minuti di andata con i filtri scelti.`));
+    for (const p of list) ul.append(placeItem(p));
+    ul.append(h('li', { class: 'hint', text: 'Luoghi da OpenStreetMap con una voce su Wikipedia o Wikidata, prima i patrimoni UNESCO. Tempi di andata calcolati con Valhalla per il tuo mezzo, dal punto più vicino del percorso; dove manca il calcolo è una stima. Orari e accessi da verificare.' }));
   }
 
   /* ------------------------------------------------------------------ */

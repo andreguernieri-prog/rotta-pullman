@@ -35,7 +35,7 @@ function serve() {
 
 /* ---------------- servizi simulati ---------------- */
 const VIA_A1 = [[45.4860, 9.2044], [45.40, 9.33], [45.31, 9.50], [45.05, 9.70], [44.80, 10.33], [44.65, 10.93], [44.50, 11.34], [44.25, 11.30], [43.95, 11.20], [43.7629, 11.2650]];
-const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null, tomtomUrls: [], vicino: false, orario: false, dateTimes: [], parkNoBus: false, blockDest: false, unreachableDest: false, honorExclude: false, fixedCoords: null, valhallaBodies: [], viaduct: false, traceFail: false, traceCalls: 0, traffic: false, incidentCalls: 0 };
+const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null, tomtomUrls: [], vicino: false, orario: false, dateTimes: [], parkNoBus: false, blockDest: false, unreachableDest: false, honorExclude: false, fixedCoords: null, valhallaBodies: [], viaduct: false, traceFail: false, traceCalls: 0, traffic: false, incidentCalls: 0, places: false, unreachablePlace: null, matrixCalls: 0 };
 
 function densify(pts, step) {
   const out = [];
@@ -261,7 +261,20 @@ function mockDati() {
     { type: 'way', id: 9500, tags: { highway: 'unclassified', name: 'Via alla Cascata', maxheight: '1.9', maxwidth: '2.3' }, geometry: [{ lat: dest[0] + 0.0003, lon: dest[1] - 0.001 }, { lat: dest[0] + 0.0003, lon: dest[1] + 0.001 }] },
     { type: 'way', id: 9501, tags: { highway: 'residential', name: 'Via Lontana', maxheight: '2' }, geometry: [{ lat: dest[0] + 0.01, lon: dest[1] }, { lat: dest[0] + 0.011, lon: dest[1] }] },
   ] : [];
-  const els = mockOverpass('corridoio').elements.concat(block, [
+  let luoghi = [];
+  if (mocks.places) {
+    const pt = (frac, m, id, tags) => Object.assign({ type: 'node', id, tags }, offsetPoint(c, frac, m));
+    const museo = pt(0.6, 1500, 9602, { tourism: 'museum', name: 'Museo nel centro storico', wikidata: 'Q102' });
+    mocks.unreachablePlace = [museo.lat, museo.lon];
+    luoghi = [
+      pt(0.3, 8000, 9600, { historic: 'archaeological_site', name: 'Area archeologica di Prova', heritage: '1', wikidata: 'Q100' }),
+      pt(0.5, 3000, 9601, { historic: 'castle', name: 'Castello di Prova', wikipedia: 'it:Castello di Prova', wikidata: 'Q101', opening_hours: 'Sa-Su 10:00-18:00' }),
+      museo,
+      pt(0.4, 40000, 9603, { tourism: 'museum', name: 'Museo lontano', wikidata: 'Q103' }),
+      pt(0.45, 2000, 9604, { tourism: 'museum', name: 'Museo minore' }),
+    ];
+  }
+  const els = mockOverpass('corridoio').elements.concat(block, luoghi, [
     { type: 'way', id: 9300, center: { lat: dest[0] + 0.002, lon: dest[1] + 0.002 }, tags: { amenity: 'parking', bus: 'designated', name: 'Parcheggio bus turistici', fee: 'yes' } },
     { type: 'node', id: 9301, lat: dest[0] - 0.008, lon: dest[1] + 0.001, tags: { amenity: 'parking', hgv: 'yes' } },
     { type: 'node', id: 9302, lat: dest[0] + 0.012, lon: dest[1], tags: { amenity: 'parking', bus: 'yes', name: 'Parcheggio troppo lontano' } },
@@ -290,6 +303,18 @@ async function setupRoutes(context) {
   await context.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
     const url = route.request().url();
     const json = (o, status) => route.fulfill({ status: status || 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(o) });
+    if (url.includes('valhalla1.openstreetmap.de/sources_to_targets')) {
+      mocks.matrixCalls++;
+      const b = JSON.parse(new URL(url).searchParams.get('json'));
+      const far = (t) => mocks.unreachablePlace && C.haversine([t.lat, t.lon], mocks.unreachablePlace) < 50;
+      return json({ sources_to_targets: b.sources.map((s0, i) => b.targets.map((t, j) => ({ from_index: i, to_index: j, time: far(t) ? null : Math.round(C.haversine([s0.lat, s0.lon], [t.lat, t.lon]) * 1.3 / (50 / 3.6)), distance: 1 }))) });
+    }
+    if (url.startsWith('https://it.wikipedia.org/api/rest_v1/page/summary/')) {
+      const title = decodeURIComponent(url.split('/summary/')[1]).replace(/_/g, ' ');
+      return json({ extract: `Il ${title} è un luogo di prova lungo il percorso.`, thumbnail: { source: 'https://upload.example/foto.png' }, content_urls: { desktop: { page: 'https://it.wikipedia.org/wiki/' + encodeURIComponent(title) } } });
+    }
+    if (url.startsWith('https://www.wikidata.org/')) return json({ entities: { Q100: { sitelinks: { itwiki: { title: 'Area archeologica di Prova' } } } } });
+    if (url.startsWith('https://upload.example/')) return route.fulfill({ status: 200, contentType: 'image/png', body: tilePng });
     if (url.includes('valhalla1.openstreetmap.de/trace_attributes')) { const r = mockTrace(route.request().postData()); return json(r.body, r.status); }
     if (url.includes('valhalla1.openstreetmap.de/route')) { const r = mockValhalla(url); return json(r.body, r.status); }
     if (url.includes('photon.komoot.io')) return json(mockPhoton(url));
@@ -305,6 +330,12 @@ async function setupRoutes(context) {
       const built = mocks.dati ? mockDati() : null;
       if (!built) return route.fulfill({ status: 404, contentType: 'text/plain', headers: { 'Access-Control-Allow-Origin': '*' }, body: '404: Not Found' });
       if (/\/index\.json/.test(url)) return json(built.index);
+      const ml = url.match(/luoghi\/(-?\d+_-?\d+)\.json/);
+      if (ml) {
+        const l = built.places && built.places.get(ml[1]);
+        if (!l) return route.fulfill({ status: 404, contentType: 'text/plain', headers: { 'Access-Control-Allow-Origin': '*' }, body: '404: Not Found' });
+        return json({ v: 1, k: ml[1], l });
+      }
       const m = url.match(/riquadri\/(-?\d+_-?\d+)\.json/);
       const tile = m && built.tiles.get(m[1]);
       if (!tile) return route.fulfill({ status: 404, contentType: 'text/plain', headers: { 'Access-Control-Allow-Origin': '*' }, body: '404: Not Found' });
@@ -986,6 +1017,51 @@ async function setupRoutes(context) {
     });
     Object.assign(mocks, { traffic: false, honorExclude: false, fixedCoords: null });
     await rctx.close();
+  }
+
+  /* --- luoghi e attrazioni lungo il percorso --- */
+  {
+    const lctx = await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: 'it-IT', timezoneId: 'Europe/Rome' });
+    await setupRoutes(lctx);
+    Object.assign(mocks, { dati: true, places: true, lastCoords: null, matrixCalls: 0 });
+    const q = await lctx.newPage();
+    watch(q, 'luoghi');
+    await q.goto(base);
+    await q.waitForFunction(() => window.__rp.state.analysis && window.__rp.state.analysis.status === 'done', null, { timeout: 30000 });
+    await step('luoghi e attrazioni: tempi in pullman, filtri, scheda con Wikipedia, aggiunta come tappa', async () => {
+      await q.click('#places-wrap > summary');
+      await q.waitForFunction(() => window.__rp.state.places && window.__rp.state.places.status === 'done', null, { timeout: 30000 });
+      assert.ok(mocks.matrixCalls >= 1, 'tempi di andata chiesti a Valhalla');
+      const txt = await q.textContent('#places');
+      assert.match(txt, /Area archeologica di Prova.*UNESCO/s);
+      assert.match(txt, /Castello di Prova.*\d+ min di andata in pullman.*Raggiungibile in pullman/s);
+      assert.match(txt, /Museo nel centro storico.*Non raggiungibile in pullman/s);
+      assert.doesNotMatch(txt, /Museo lontano|Museo minore/);
+      assert.equal(await q.locator('.pl-marker').count(), 3);
+      await q.selectOption('#pl-minutes', '10');
+      const t10 = await q.textContent('#places');
+      assert.doesNotMatch(t10, /Area archeologica di Prova/);
+      assert.match(t10, /Castello di Prova/);
+      await q.selectOption('#pl-minutes', '20');
+      await q.click('.pl-chip:has-text("Castelli")');
+      assert.doesNotMatch(await q.textContent('#places ul'), /Castello di Prova/);
+      await q.click('.pl-chip:has-text("Castelli")');
+      await q.locator('#places .hz.pl', { hasText: 'Castello di Prova' }).locator('button', { hasText: 'Mostra sulla mappa' }).click();
+      await q.waitForSelector('.hz-popup .pl-wiki img', { timeout: 8000 });
+      const card = await q.textContent('.hz-popup .hzpop');
+      assert.match(card, /Il Castello di Prova è un luogo di prova/);
+      assert.match(card, /Orari secondo OpenStreetMap \(da verificare\): Sa-Su 10:00-18:00/);
+      assert.match(card, /Parcheggi vicini|Nessun parcheggio per bus/);
+      await q.waitForTimeout(600);
+      await q.screenshot({ path: path.join(OUT, '20-luoghi.png') });
+      const before = await q.evaluate(() => window.__rp.state.stops.length);
+      await q.locator('.hz-popup button', { hasText: 'Aggiungi come tappa' }).click();
+      await q.waitForFunction((n) => window.__rp.state.stops.length === n + 1 && window.__rp.state.route && window.__rp.state.route.stops.length === n + 1, before, { timeout: 30000 });
+      const stops = await q.evaluate(() => window.__rp.state.stops.map((s) => [s.label, s.dwell]));
+      assert.deepEqual(stops[1], ['Castello di Prova', 60]);
+    });
+    Object.assign(mocks, { dati: false, places: false, unreachablePlace: null });
+    await lctx.close();
   }
 
   /* --- tema scuro --- */

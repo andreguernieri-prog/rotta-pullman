@@ -1708,6 +1708,59 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* Luoghi e attrazioni lungo il percorso                               */
+  /* ------------------------------------------------------------------ */
+  const PLACE_LABEL = { museo: 'Museo', castello: 'Castello', archeologia: 'Sito archeologico', chiesa: 'Chiesa o santuario', natura: 'Natura e panorami', parco: 'Parco a tema o zoo', monumento: 'Monumento', attrazione: 'Attrazione' };
+  const PLACE_WEIGHT = { museo: 8, castello: 8, archeologia: 8, chiesa: 6, natura: 6, parco: 6, monumento: 4, attrazione: 5 };
+
+  /* tipo di luogo, solo se notevole (voce su Wikipedia o Wikidata, oppure patrimonio UNESCO) */
+  function placeKind(t) {
+    if (!t || !t.name) return null;
+    const unesco = t.heritage === '1' || /whc|unesco/i.test(t['heritage:operator'] || '');
+    if (!t.wikipedia && !t.wikidata && !unesco) return null;
+    const tour = t.tourism || '', hist = t.historic || '';
+    if (/^(museum|gallery|aquarium)$/.test(tour)) return 'museo';
+    if (/^(theme_park|zoo)$/.test(tour)) return 'parco';
+    if (/^(castle|fort|palace)$/.test(hist)) return 'castello';
+    if (/^(archaeological_site|ruins)$/.test(hist)) return 'archeologia';
+    if (/^(church|monastery|abbey|cathedral)$/.test(hist)) return 'chiesa';
+    if (t.amenity === 'place_of_worship') {
+      return /^(cathedral|basilica)$/.test(t.building || '') || /\b(duomo|cattedrale|basilica|santuario|abbazia|certosa|pieve)\b/i.test(t.name) || unesco ? 'chiesa' : null;
+    }
+    if (/^(waterfall|cave_entrance)$/.test(t.natural || '') || tour === 'viewpoint') return 'natura';
+    if (/^(monument|city_gate|tower)$/.test(hist)) return 'monumento';
+    if (tour === 'attraction' || unesco) return 'attrazione';
+    return null;
+  }
+
+  /* luoghi di un riquadro: [rif, lat, lon, tipo, nome, extra { w: wikipedia, d: wikidata, u: UNESCO, o: orari, s: sito }] */
+  function placesFromTile(tile) {
+    return ((tile && tile.l) || []).map(([ref, lat, lon, cat, name, x]) => Object.assign({ id: ref, lat, lon, cat, name }, x || {}));
+  }
+
+  /* luoghi entro maxM metri in linea d'aria dal percorso, con punto di uscita e punteggio di notorietà */
+  function placeCandidates(places, idx, maxM) {
+    const out = [];
+    for (const p of places || []) {
+      const r = idx.nearest(p.lat, p.lon, maxM);
+      if (!r) continue;
+      const score = (p.u ? 100 : 0) + (/^it:/.test(p.w || '') ? 20 : p.w ? 10 : 0) + (p.d ? 5 : 0) + (PLACE_WEIGHT[p.cat] || 0);
+      const dup = out.find((q) => q.name === p.name && haversine([q.lat, q.lon], [p.lat, p.lon]) < 300);
+      if (dup) { if (score > dup.score) Object.assign(dup, p, { along: r.along, distM: r.dist, score }); continue; }
+      out.push(Object.assign({}, p, { along: r.along, distM: r.dist, score, label: PLACE_LABEL[p.cat] || 'Luogo' }));
+    }
+    return out;
+  }
+
+  /* i più notevoli (a parità, i più vicini), poi in ordine lungo il percorso */
+  function pickPlaces(cands, limit) {
+    return cands.slice().sort((a, b) => b.score - a.score || a.distM - b.distM).slice(0, limit || 40).sort((a, b) => a.along - b.along);
+  }
+
+  /* tempo di andata stimato in minuti, quando il calcolo per il pullman non è disponibile */
+  function placeEstimateMin(distM) { return Math.max(1, Math.round((distM * 1.3) / (50 / 3.6) / 60)); }
+
+  /* ------------------------------------------------------------------ */
   /* Traffico e cantieri (TomTom Traffic Incidents)                      */
   /* ------------------------------------------------------------------ */
   const TRAFFIC_CAT = {
@@ -2016,6 +2069,7 @@
     buildGpx, encodeShare, decodeShare, normName, matchPermit, groupPermits,
     tileKey, tilesAround, tilesForCoords, pointInRings, coordsCovered, tileToElements,
     PARK_NEAR, PARK_FAR, ringArea, parkingKind, pickParkings, nearOfficial, blockersNear, makeRouteWays,
-    trafficBoxes, matchIncidents, incidentStatus, trafficDelay, avoidPoints, mergeAvoid, walkEstimate,
+    trafficBoxes, matchIncidents, incidentStatus, trafficDelay,
+    PLACE_LABEL, placeKind, placesFromTile, placeCandidates, pickPlaces, placeEstimateMin, avoidPoints, mergeAvoid, walkEstimate,
   };
 });

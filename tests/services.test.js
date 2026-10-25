@@ -138,3 +138,34 @@ test('tomtom: segnalazioni di traffico in un riquadro, in italiano, presenti e f
   global.fetch = async () => res(403, '{}');
   await assert.rejects(S.tomtomIncidents([11, 44, 11.5, 44.5], 'CHIAVE'), /non è abilitata al servizio Traffic/);
 });
+
+test('valhalla: tempi di andata in pullman, con le misure del mezzo e raggio di 300 m sul luogo', async () => {
+  let body = null;
+  global.fetch = async (url) => {
+    body = JSON.parse(new URL(String(url)).searchParams.get('json'));
+    return res(200, JSON.stringify({ sources_to_targets: [[{ time: 600 }, { time: null }], [{ time: 900 }, {}]] }));
+  };
+  const veh = global.RPCore.sanitizeVehicle(global.RPCore.PRESETS[1]);
+  const m = await S.valhallaMatrix([{ lat: 45, lon: 9 }, { lat: 45.1, lon: 9 }], [{ lat: 45.05, lon: 9.1 }, { lat: 45.2, lon: 9.2 }], veh, 0.1, { vmax: 100, strictHgv: true });
+  assert.deepEqual(m, [[600, null], [900, null]]);
+  assert.equal(body.costing, 'truck');
+  assert.equal(body.targets[0].radius, 300);
+  assert.ok(body.costing_options.truck.height > 3);
+});
+
+test('wikipedia: descrizione e foto, anche partendo da Wikidata', async () => {
+  const calls = [];
+  global.fetch = async (url) => {
+    const u = String(url);
+    calls.push(u);
+    if (u.includes('wikidata.org')) return res(200, JSON.stringify({ entities: { Q42: { sitelinks: { itwiki: { title: 'Castello di Prova' } } } } }));
+    return res(200, JSON.stringify({ extract: 'Un castello.', thumbnail: { source: 'https://upload.example/c.jpg' }, content_urls: { desktop: { page: 'https://it.wikipedia.org/wiki/Castello_di_Prova' } } }));
+  };
+  const a = await S.wikiSummary('it:Museo di Prova', null);
+  assert.equal(a.extract, 'Un castello.');
+  assert.match(calls[0], /it\.wikipedia\.org\/api\/rest_v1\/page\/summary\/Museo_di_Prova/);
+  const b = await S.wikiSummary(null, 'Q42');
+  assert.equal(b.image, 'https://upload.example/c.jpg');
+  assert.match(calls[2], /summary\/Castello_di_Prova/);
+  assert.equal(await S.wikiSummary(null, null), null);
+});

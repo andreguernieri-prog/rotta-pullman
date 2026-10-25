@@ -765,3 +765,37 @@ test('traffico: stato all\'ora di passaggio e ritardo di adesso', () => {
   assert.deepEqual(C.incidentStatus(chiusura, Date.parse('2026-10-27T22:00:00Z'), now), { state: 'attivo', severity: 'red' });
   assert.equal(C.trafficDelay([coda, Object.assign({}, coda, { rel: 'vicino' }), Object.assign({}, coda, { validity: 'future' })], now), 600);
 });
+
+/* ------------------------------ luoghi e attrazioni ------------------------------ */
+test('luoghi: solo quelli notevoli, con il tipo giusto', () => {
+  const k = (t) => C.placeKind(Object.assign({ name: 'X' }, t));
+  assert.equal(k({ tourism: 'museum', wikidata: 'Q1' }), 'museo');
+  assert.equal(k({ tourism: 'museum' }), null, 'senza Wikipedia o Wikidata non si mostra');
+  assert.equal(k({ historic: 'castle', tourism: 'attraction', wikipedia: 'it:X' }), 'castello');
+  assert.equal(k({ historic: 'archaeological_site', heritage: '1' }), 'archeologia');
+  assert.equal(C.placeKind({ name: 'Duomo di Prova', amenity: 'place_of_worship', wikidata: 'Q2' }), 'chiesa');
+  assert.equal(C.placeKind({ name: 'Chiesa di San Rocco', amenity: 'place_of_worship', wikidata: 'Q3' }), null, 'chiese minori escluse');
+  assert.equal(k({ natural: 'waterfall', wikidata: 'Q4' }), 'natura');
+  assert.equal(k({ tourism: 'theme_park', wikidata: 'Q5' }), 'parco');
+  assert.equal(C.placeKind({ tourism: 'museum', wikidata: 'Q6' }), null, 'serve il nome');
+});
+
+test('luoghi: entro la distanza dal percorso, i più noti prima, poi in ordine di km', () => {
+  const coords = straightRoute(45, 9, 200, 0.001); // ~22 km verso nord
+  const idx = new C.RouteIndex(coords);
+  const tile = { l: [
+    ['w1', 45.05, 9.05, 'castello', 'Castello vicino', { w: 'it:Castello vicino', d: 'Q1' }],
+    ['n2', 45.02, 9.10, 'archeologia', 'Sito UNESCO', { u: 1, d: 'Q2' }],
+    ['n3', 45.15, 9.40, 'museo', 'Museo lontano', { d: 'Q3' }],
+    ['n4', 45.0502, 9.0502, 'castello', 'Castello vicino', { d: 'Q1' }], // doppione come punto
+  ] };
+  const pl = C.placesFromTile(tile);
+  assert.equal(pl[1].u, 1);
+  const cands = C.placeCandidates(pl, idx, 18000);
+  assert.deepEqual(cands.map((p) => p.name).sort(), ['Castello vicino', 'Sito UNESCO']);
+  const picked = C.pickPlaces(cands, 1);
+  assert.equal(picked[0].name, 'Sito UNESCO', 'UNESCO prima di tutto');
+  assert.deepEqual(C.pickPlaces(cands, 5).map((p) => p.name), ['Sito UNESCO', 'Castello vicino'], 'in ordine lungo il percorso');
+  assert.equal(cands.find((p) => p.name === 'Castello vicino').label, 'Castello');
+  assert.ok(C.placeEstimateMin(10000) >= 15 && C.placeEstimateMin(10000) <= 17);
+});

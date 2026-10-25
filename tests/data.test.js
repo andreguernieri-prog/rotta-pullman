@@ -173,3 +173,24 @@ test('dati: parcheggi grandi generici con la superficie, piccoli e coperti scart
   assert.ok(!byId[42] && !byId[43]);
   assert.equal(D.areaOf({ type: 'Point', coordinates: [9, 45] }), 0);
 });
+
+test('dati: luoghi notevoli in riquadri da 0,5°, con Wikipedia, UNESCO, orari e sito', () => {
+  const { index, places } = build([
+    point(51, 45.48, 9.2, { tourism: 'museum', name: 'Museo di Prova', wikipedia: 'it:Museo di Prova', opening_hours: 'Tu-Su 10:00-18:00', website: 'museo.example' }),
+    poly(52, [[45.6, 9.6], [45.601, 9.6], [45.601, 9.601], [45.6, 9.6]], { historic: 'castle', name: 'Castello', wikidata: 'Q52', heritage: '1' }),
+    point(53, 45.49, 9.21, { tourism: 'museum', name: 'Museo minore' }), // senza Wikipedia/Wikidata
+    point(54, 45.47, 9.19, { amenity: 'place_of_worship', name: 'Chiesa di San Rocco', wikidata: 'Q54' }),
+  ]);
+  assert.equal(index.conteggi.luoghi, 2);
+  assert.equal(index.riquadroLuoghi, 0.5);
+  const k = C.tileKey(45.48, 9.2, D.RIQUADRO_LUOGHI);
+  const l = C.placesFromTile({ l: places.get(k) });
+  assert.equal(l.length, 1);
+  const museo = l[0];
+  assert.deepEqual([museo.cat, museo.w, museo.o, museo.s], ['museo', 'it:Museo di Prova', 'Tu-Su 10:00-18:00', 'museo.example']);
+  const k2 = C.tileKey(45.6, 9.6, D.RIQUADRO_LUOGHI);
+  assert.notEqual(k2, k);
+  const castello = C.placesFromTile({ l: places.get(k2) })[0];
+  assert.deepEqual([castello.name, castello.cat, castello.u], ['Castello', 'castello', 1]);
+  assert.equal(index.luoghi[k], 1);
+});

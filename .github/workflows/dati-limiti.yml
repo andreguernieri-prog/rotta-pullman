@@ -1,5 +1,5 @@
 # Ogni settimana scarica la mappa OpenStreetMap dell'Italia, ne estrae i limiti utili ai bus
-# (compresi i divieti a giorni e orari),
+# (compresi i divieti a giorni e orari) e i luoghi e attrazioni notevoli,
 # le aree di servizio e i parcheggi per bus, e pubblica i riquadri sul ramo "dati".
 # L'app li legge da lì; per i tratti fuori Italia usa ancora Overpass.
 name: Dati dei limiti (Italia)
@@ -53,6 +53,9 @@ jobs:
             nw/maxheight:conditional nw/maxwidth:conditional nw/maxlength:conditional \
             nw/maxweight:conditional nw/maxweightrating:conditional nw/maxaxleload:conditional \
             nwr/highway=services,rest_area nwr/amenity=parking \
+            nwr/tourism=attraction,museum,gallery,aquarium,viewpoint,theme_park,zoo \
+            nwr/historic=castle,fort,palace,monument,archaeological_site,ruins,city_gate,tower,church,monastery,abbey \
+            nwr/natural=waterfall,cave_entrance nwr/amenity=place_of_worship nwr/heritage \
             -o filtrato.osm.pbf
           osmium export filtrato.osm.pbf -f geojsonseq -a type,id,timestamp,version -o filtrato.geojsonseq
           ls -lh filtrato.osm.pbf filtrato.geojsonseq

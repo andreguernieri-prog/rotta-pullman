@@ -474,8 +474,8 @@ out body geom;`;
   }
 
   const tileMem = new Map();
-  async function dataTile(index, key, signal) {
-    const url = URLS.dati + 'riquadri/' + key + '.json?v=' + encodeURIComponent(index.generato);
+  async function dataTile(index, key, signal, dir) {
+    const url = URLS.dati + (dir || 'riquadri') + '/' + key + '.json?v=' + encodeURIComponent(index.generato);
     if (tileMem.has(url)) return tileMem.get(url);
     const c = await openDataCache();
     let data = null;
@@ -504,6 +504,67 @@ out body geom;`;
     };
     await Promise.all([worker(), worker(), worker(), worker()]);
     return out;
+  }
+
+  /* riquadri dei luoghi e attrazioni (cartella luoghi/), quattro alla volta */
+  async function dataPlaces(index, keys, signal) {
+    const wanted = keys.filter((k) => index.luoghi && index.luoghi[k]);
+    const out = [];
+    let next = 0;
+    const worker = async () => {
+      while (next < wanted.length) {
+        const k = wanted[next++];
+        out.push(await dataTile(index, k, signal, 'luoghi'));
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    return out;
+  }
+
+  /*
+   * Tempi di andata in pullman (Valhalla sources_to_targets, con le misure del mezzo): times[i][j] in secondi
+   * dalla sorgente i alla destinazione j, null se il mezzo non ci arriva. Le destinazioni hanno un raggio di
+   * ricerca di 300 m: conta arrivare vicino al luogo, non dentro un centro pedonale.
+   */
+  async function valhallaMatrix(sources, targets, veh, margin, opt, signal) {
+    const base = valhallaBody([sources[0], targets[0]], veh, margin, Object.assign({}, opt, { avoid: [] }));
+    const body = {
+      sources: sources.map((p) => ({ lat: +p.lat.toFixed(6), lon: +p.lon.toFixed(6) })),
+      targets: targets.map((p) => ({ lat: +p.lat.toFixed(6), lon: +p.lon.toFixed(6), radius: 300 })),
+      costing: 'truck',
+      costing_options: base.costing_options,
+      units: 'kilometers',
+    };
+    const r = await request(URLS.valhalla + '/sources_to_targets?json=' + encodeURIComponent(JSON.stringify(body)), { signal }, 30000);
+    if (!r.ok || !r.data || !Array.isArray(r.data.sources_to_targets)) throw new ServiceError('Tempi di andata non disponibili.', 'matrix');
+    return r.data.sources_to_targets.map((row) => row.map((c) => (c && c.time != null ? c.time : null)));
+  }
+
+  /* titolo della voce di Wikipedia in italiano da un identificativo Wikidata */
+  async function wikidataTitle(qid, signal) {
+    const u = 'https://www.wikidata.org/w/api.php?action=wbgetentities&props=sitelinks&sitefilter=itwiki&format=json&origin=*&ids=' + encodeURIComponent(qid);
+    const r = await request(u, { signal }, 12000);
+    const e = r.ok && r.data && r.data.entities && r.data.entities[qid];
+    return e && e.sitelinks && e.sitelinks.itwiki ? e.sitelinks.itwiki.title : null;
+  }
+
+  /* descrizione breve e foto di una voce di Wikipedia (wikipedia = "it:Titolo", oppure solo wikidata) */
+  async function wikiSummary(wikipedia, wikidata, signal) {
+    let lang = 'it', title = null;
+    const m = /^([a-z-]{2,12}):(.+)$/.exec(wikipedia || '');
+    if (m) { lang = m[1]; title = m[2]; }
+    if ((!title || lang !== 'it') && wikidata) {
+      try { const t = await wikidataTitle(wikidata, signal); if (t) { lang = 'it'; title = t; } } catch (e) { if (e.code === 'aborted') throw e; }
+    }
+    if (!title) return null;
+    const r = await request(`https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title.replace(/ /g, '_'))}`, { signal }, 12000);
+    if (!r.ok || !r.data) return null;
+    const d = r.data;
+    return {
+      extract: d.extract || '',
+      image: d.thumbnail && d.thumbnail.source ? d.thumbnail.source : null,
+      url: d.content_urls && d.content_urls.desktop ? d.content_urls.desktop.page : `https://${lang}.wikipedia.org/wiki/${encodeURIComponent(title)}`,
+    };
   }
 
   /* ------------------------------ TomTom (seconda opinione) ------------------------------ */
@@ -627,5 +688,5 @@ out body geom;`;
     return { image: list[0] || null, signs };
   }
 
-  root.RPServices = { URLS, ServiceError, geocode, geocodeFallback, reverse, routeValhalla, routeOrs, corridor, corridorQuery, parkings, valhallaBody, comuneAt, sleep, dataIndex, dataTiles, tomtomRoute, tomtomIncidents, mapillaryNear, traceWays };
+  root.RPServices = { URLS, ServiceError, geocode, geocodeFallback, reverse, routeValhalla, routeOrs, corridor, corridorQuery, parkings, valhallaBody, comuneAt, sleep, dataIndex, dataTiles, dataPlaces, valhallaMatrix, wikiSummary, tomtomRoute, tomtomIncidents, mapillaryNear, traceWays };
 })(typeof self !== 'undefined' ? self : this);
