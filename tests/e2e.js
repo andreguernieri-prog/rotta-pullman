@@ -478,6 +478,23 @@ async function mockRoute(route) {
     assert.match(tl, /Secchia Est/);
     assert.doesNotMatch(tl, /Secchia Ovest/);
     assert.ok(await p.locator('.brk-marker').count() >= 1);
+    // tutte le aree di servizio dalla propria carreggiata, con la pausa prevista segnata
+    const sv = await p.textContent('#services');
+    assert.match(sv, /Area di servizio Arda.*Area di servizio · km \d+ · verso le \d\d:\d\d/s);
+    assert.match(sv, /Area di servizio Secchia Est.*Pausa prevista/s);
+    assert.doesNotMatch(sv, /Secchia Ovest/);
+    assert.equal(await p.textContent('#sv-count'), '2');
+    assert.equal(await p.locator('.sv-marker').count(), 1, 'la pausa ha già il suo segno');
+    // fonti ufficiali su traffico e cantieri, anche senza chiave TomTom
+    const src = await p.textContent('#traffic .tr-sources');
+    assert.match(src, /CCISS Viaggiare informati.*A1: Autostrade per l'Italia.*ANAS/s);
+    assert.match(await p.getAttribute('#traffic .tr-sources a:has-text("Autostrade per l\'Italia")', 'href'), /autostrade\.it/);
+    await p.evaluate(() => document.querySelector('#services-sec').scrollIntoView({ block: 'start' }));
+    await p.waitForTimeout(300);
+    await p.screenshot({ path: path.join(OUT, '21-aree-di-servizio.png') });
+    await p.evaluate(() => document.querySelector('#traffic-sec').scrollIntoView({ block: 'start' }));
+    await p.waitForTimeout(300);
+    await p.screenshot({ path: path.join(OUT, '21a-fonti-traffico.png') });
   });
 
   await step('scheda mezzo e cambio a bipiano: il ponte da 3,9 m diventa non transitabile', async () => {

@@ -228,6 +228,7 @@
     breaks: L.layerGroup().addTo(map),
     parks: L.layerGroup().addTo(map),
     places: L.layerGroup().addTo(map),
+    services: L.layerGroup().addTo(map),
     traffic: L.layerGroup().addTo(map),
     hazards: L.layerGroup().addTo(map),
     stops: L.layerGroup().addTo(map),
@@ -953,7 +954,7 @@
       state.stale = false;
       $('#stale').hidden = true;
       drawRoute();
-      lg.hazards.clearLayers(); lg.parks.clearLayers();
+      lg.hazards.clearLayers(); lg.parks.clearLayers(); lg.services.clearLayers();
       replan();
       renderResult();
       showTab('percorso');
@@ -1291,8 +1292,9 @@
     drawBreaks();
     if (state.analysis && state.analysis.hazards) drawHazards();
     drawTraffic();
+    drawServices();
     if (!$('#res').hidden) {
-      renderSummary(); renderTimeline(); renderMini(); renderTraffic();
+      renderSummary(); renderTimeline(); renderMini(); renderTraffic(); renderServices();
       if (state.analysis && state.analysis.hazards) { renderCheck(); renderHazards(); }
     }
   }
@@ -1706,7 +1708,66 @@
     $('#res-empty').hidden = has;
     $('#res').hidden = !has;
     if (!has) return;
-    renderSummary(); renderRouteNotes(); renderCheck(); renderPermits(); renderTimeline(); renderHazards(); renderTraffic(); renderParkings(); renderPlaces(); renderSteps(); renderMini();
+    renderSummary(); renderRouteNotes(); renderCheck(); renderPermits(); renderTimeline(); renderServices(); renderHazards(); renderTraffic(); renderParkings(); renderPlaces(); renderSteps(); renderMini();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Aree di servizio e di sosta sul percorso                            */
+  /* ------------------------------------------------------------------ */
+  const FUEL_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V5a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v15z M7 7h5v4H7z" fill="#fff" fill-rule="evenodd"/><path d="M14 9h2l2 2v6a1.5 1.5 0 0 0 3 0v-7l-3-3" fill="none" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>';
+  state.servicesShow = true;
+
+  /* aree dalla propria carreggiata (il controllo scarta quelle sull'altra), con orario di passaggio e pause previste */
+  function servicesOnRoute() {
+    const a = state.analysis;
+    if (!a || !a.services || !state.route) return [];
+    const used = new Set((state.plan ? state.plan.events : []).filter((e) => e.type === 'pausa' && e.place).map((e) => e.place.id));
+    return a.services.slice().sort((x, y) => x.along - y.along)
+      .map((s) => Object.assign({}, s, { pass: clockAtAlong(s.along), pausa: used.has(s.id) }));
+  }
+  const svKind = (s) => (s.kind === 'rest_area' ? 'Area di sosta' : 'Area di servizio');
+  function svMeta(s) { return `${svKind(s)} · km ${C.fmtNum(s.along / 1000, 0)}` + (s.pass ? ' · verso le ' + C.fmtClock(s.pass, depMs()) : ''); }
+
+  function drawServices() {
+    lg.services.clearLayers();
+    if (!state.servicesShow) return;
+    for (const s of servicesOnRoute()) {
+      if (s.pausa) continue; // la pausa prevista ha già il suo segno
+      const sosta = s.kind === 'rest_area';
+      const icon = L.divIcon({ className: '', html: `<div class="sv-marker${sosta ? ' sosta' : ''}">${sosta ? 'P' : FUEL_SVG}</div>`, iconSize: [22, 22], iconAnchor: [11, 11], popupAnchor: [0, -10] });
+      L.marker([s.lat, s.lon], { icon, zIndexOffset: 120, title: s.name })
+        .bindPopup(() => popupBox(s.name, svMeta(s)))
+        .addTo(lg.services);
+    }
+  }
+
+  function renderServices() {
+    const ul = $('#services');
+    if (!ul) return;
+    ul.replaceChildren();
+    $('#sv-count').textContent = '';
+    if (!state.route) return;
+    const a = state.analysis;
+    const list = servicesOnRoute();
+    if (!list.length) {
+      ul.append(h('li', { class: 'none' }, !a || a.status === 'loading' ? 'Cerco le aree di servizio lungo il percorso…' : 'Nessuna area di servizio o di sosta segnata su OpenStreetMap lungo il percorso.'));
+      return;
+    }
+    $('#sv-count').textContent = String(list.length);
+    const show = h('input', { type: 'checkbox', id: 'sv-show' });
+    show.checked = state.servicesShow;
+    show.addEventListener('change', () => { state.servicesShow = show.checked; drawServices(); });
+    ul.append(h('li', { class: 'sv-head' }, h('label', { class: 'check', for: 'sv-show' }, show, h('span', { text: 'Mostra sulla mappa' }))));
+    for (const s of list) {
+      const sosta = s.kind === 'rest_area';
+      ul.append(h('li', { class: 'hz sv' + (s.pausa ? ' pausa' : '') },
+        h('span', { class: 'sv-icon' + (sosta ? ' sosta' : ''), svg: sosta ? null : FUEL_SVG }, sosta ? 'P' : null),
+        h('div', { class: 'hz-body' },
+          h('span', { class: 'hz-title' }, s.name, s.pausa ? h('span', { class: 'sev sev-pausa-bg', text: 'Pausa prevista' }) : null),
+          h('span', { class: 'hz-meta', text: svMeta(s) }),
+          h('span', { class: 'hz-links' }, h('button', { type: 'button', onclick: () => flyTo(s.lat, s.lon, 16) }, 'Mostra sulla mappa')))));
+    }
+    ul.append(h('li', { class: 'hint', text: 'Solo quelle raggiungibili dalla tua carreggiata, entro 450 m dal percorso, da OpenStreetMap: servizi, carburanti e orari da verificare. Le aree scelte per le pause del programma sono segnate.' }));
   }
 
   /* ------------------------------------------------------------------ */
@@ -1939,11 +2000,6 @@
   /* Traffico e cantieri (TomTom Traffic)                                */
   /* ------------------------------------------------------------------ */
   let trafficTimer = null;
-  const TRAFFIC_LINKS = [
-    { testo: 'CCISS Viaggiare informati', url: 'https://www.cciss.it/' },
-    { testo: 'Autostrade per l\'Italia', url: 'https://www.autostrade.it/' },
-    { testo: 'ANAS', url: 'https://www.stradeanas.it/' },
-  ];
   const TR_GLYPH = {
     chiusura: '<rect x="5" y="10.5" width="14" height="3" rx="1" fill="#fff"/>',
     coda: '<path d="M3.5 15.5h4.5v-3.5H3.5z M9.75 15.5h4.5v-3.5h-4.5z M16 15.5h4.5v-3.5H16z" fill="#fff"/>',
@@ -2060,7 +2116,7 @@
       h('div', { class: 'hz-links' },
         x.st.state === 'attivo' ? h('button', { type: 'button', onclick: () => avoidHazard({ alongStart: x.alongStart, alongEnd: x.alongEnd, title: trTitle(x), name: x.from && x.to ? `${x.from} → ${x.to}` : '', ids: ['traffico/' + x.id] }) }, 'Evita questo punto') : null,
         h('a', { href: `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${x.lat.toFixed(6)},${x.lon.toFixed(6)}`, target: '_blank', rel: 'noopener' }, 'Street View'),
-        h('a', { href: TRAFFIC_LINKS[0].url, target: '_blank', rel: 'noopener' }, 'CCISS')),
+        (() => { const src = C.sourceForRoads(x.roads); return h('a', { href: src.url, target: '_blank', rel: 'noopener' }, 'Fonte: ' + src.nome); })()),
       h('p', { class: 'hz-meta', text: 'Fonte: TomTom Traffic' + (state.traffic && state.traffic.updatedAt ? `, aggiornato alle ${C.fmtClock(state.traffic.updatedAt)}` : '') + '.' }));
   }
 
@@ -2088,11 +2144,28 @@
         x.rel === 'vicino' ? h('span', { class: 'maybe-tag', text: 'Carreggiata non certa' }) : null,
         h('span', { class: 'hz-links' },
           h('button', { type: 'button', onclick: () => { flyTo(x.lat, x.lon, 15); } }, 'Mostra sulla mappa'),
+          (() => { const src = C.sourceForRoads(x.roads); return h('a', { href: src.url, target: '_blank', rel: 'noopener' }, 'Fonte: ' + src.nome); })(),
           x.st.state === 'attivo' ? h('button', { type: 'button', onclick: () => avoidHazard({ alongStart: x.alongStart, alongEnd: x.alongEnd, title: trTitle(x), name: x.from && x.to ? `${x.from} → ${x.to}` : '', ids: ['traffico/' + x.id] }) }, 'Evita questo punto') : null)));
   }
 
-  function trafficLinks() {
-    return h('li', { class: 'hint' }, 'Notiziari ufficiali: ', ...TRAFFIC_LINKS.flatMap((l, i) => [i ? ' · ' : '', h('a', { href: l.url, target: '_blank', rel: 'noopener' }, l.testo)]));
+  /* fonti ufficiali: CCISS, i gestori delle autostrade del percorso, ANAS */
+  function trafficSources() {
+    const r = state.route;
+    const refs = r ? C.roadRefs(r.steps.map((s) => s.streets).join(' · ')) : [];
+    const link = (o) => (o.url ? h('a', { href: o.url, target: '_blank', rel: 'noopener' }, o.nome) : h('span', { text: o.nome }));
+    const ul = h('ul');
+    ul.append(h('li', null, link(C.TRAFFIC_SOURCES.cciss), ' · ' + C.TRAFFIC_SOURCES.cciss.nota));
+    let unlinked = false;
+    for (const m of refs.filter((x) => /^A\d/.test(x))) {
+      const ops = C.roadOperators(m);
+      if (!ops.length) continue;
+      if (ops.some((o) => !o.url)) unlinked = true;
+      ul.append(h('li', null, h('b', { text: m + ': ' }), ...ops.flatMap((o, i) => [i ? ' · ' : '', link(o), o.tratto ? ` (${o.tratto})` : ''])));
+    }
+    ul.append(h('li', null, link(C.TRAFFIC_SOURCES.anas), ' · ' + C.TRAFFIC_SOURCES.anas.nota));
+    return h('div', { class: 'tr-sources' },
+      h('b', { text: 'Fonti ufficiali su traffico e cantieri' }), ul,
+      unlinked ? h('span', { class: 'hz-meta', text: 'Per i gestori senza collegamento usa il notiziario del CCISS.' }) : null);
   }
 
   /* ritardo per il traffico segnalato ora (minuti) e se la partenza è abbastanza vicina da contare */
@@ -2110,11 +2183,12 @@
     ul.replaceChildren();
     $('#tr-count').textContent = '';
     const t = state.traffic;
+    if (!state.route) return;
+    ul.append(trafficSources());
     const list = h('ul', { class: 'hazards' });
     ul.append(list);
-    if (!state.route) return;
     if (!state.options.tomtomKey) {
-      list.append(h('li', { class: 'none' }, 'Per vedere code, incidenti, cantieri e chiusure lungo il percorso aggiungi la chiave TomTom nelle preferenze di percorso.'), trafficLinks());
+      list.append(h('li', { class: 'none' }, 'Per vedere sulla mappa code, incidenti, cantieri e chiusure lungo il percorso aggiungi la chiave TomTom nelle preferenze di percorso.'));
       return;
     }
     if (!t || t.status === 'loading' && !(t.items && t.items.length)) { list.append(h('li', { class: 'none' }, 'Cerco le segnalazioni di traffico lungo il percorso…')); return; }
@@ -2136,7 +2210,6 @@
         h('summary', null, `Altre segnalazioni, non valide al tuo passaggio (${other.length})`),
         h('ul', { class: 'hazards' }, other.map(trafficItem)))));
     }
-    list.append(trafficLinks());
   }
 
   /* avvisi sul percorso: tappe spostate dove arriva il pullman, alternativa ai punti non transitabili */

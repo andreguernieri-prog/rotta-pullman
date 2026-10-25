@@ -1708,6 +1708,61 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* Fonti ufficiali su traffico e cantieri                              */
+  /* ------------------------------------------------------------------ */
+  // url: solo i siti verificati; per gli altri gestori si indica il nome e si rimanda al CCISS
+  const ASPI = { nome: 'Autostrade per l\'Italia', url: 'https://www.autostrade.it/' };
+  const TRAFFIC_SOURCES = {
+    cciss: { nome: 'CCISS Viaggiare informati', url: 'https://www.cciss.it/', nota: 'notiziario nazionale su tutte le strade' },
+    anas: { nome: 'ANAS', url: 'https://www.stradeanas.it/', nota: 'strade statali' },
+  };
+  const ROAD_OPERATORS = {
+    A1: [ASPI], A8: [ASPI], A9: [ASPI], A11: [ASPI], A13: [ASPI], A14: [ASPI], A16: [ASPI], A26: [ASPI], A27: [ASPI], A30: [ASPI],
+    A10: [Object.assign({ tratto: 'Genova–Savona' }, ASPI), { nome: 'Autostrada dei Fiori', tratto: 'Savona–Ventimiglia' }],
+    A12: [Object.assign({ tratto: 'Genova–Sestri Levante, Roma–Civitavecchia' }, ASPI), { nome: 'SALT', tratto: 'Sestri Levante–Livorno' }, { nome: 'SAT', tratto: 'Livorno–Civitavecchia' }],
+    A7: [Object.assign({ tratto: 'Genova–Serravalle' }, ASPI), { nome: 'Milano Serravalle', tratto: 'Serravalle–Milano' }],
+    A23: [{ nome: 'Autostrade Alto Adriatico', tratto: 'Palmanova–Udine' }, Object.assign({ tratto: 'Udine–Tarvisio' }, ASPI)],
+    A4: [{ nome: 'SATAP', tratto: 'Torino–Milano' }, Object.assign({ tratto: 'Milano–Brescia' }, ASPI),
+      { nome: 'Autostrada Brescia Verona Vicenza Padova', tratto: 'Brescia–Padova', url: 'https://www.a4holding.it/' },
+      { nome: 'Concessioni Autostradali Venete', tratto: 'Padova–Venezia e Passante di Mestre' }, { nome: 'Autostrade Alto Adriatico', tratto: 'Venezia–Trieste' }],
+    A31: [{ nome: 'Autostrada Brescia Verona Vicenza Padova', url: 'https://www.a4holding.it/' }],
+    A22: [{ nome: 'Autostrada del Brennero', url: 'https://www.autobrennero.it/it/viabilita/canali-informativi/' }],
+    A57: [{ nome: 'Concessioni Autostradali Venete' }, { nome: 'Autostrade Alto Adriatico' }],
+    A28: [{ nome: 'Autostrade Alto Adriatico' }], A34: [{ nome: 'Autostrade Alto Adriatico' }],
+    A21: [{ nome: 'SATAP' }], A15: [{ nome: 'SALT' }], A6: [{ nome: 'Autostrada dei Fiori' }],
+    A24: [{ nome: 'ANAS', url: TRAFFIC_SOURCES.anas.url }], A25: [{ nome: 'ANAS', url: TRAFFIC_SOURCES.anas.url }],
+    A2: [{ nome: 'ANAS', url: TRAFFIC_SOURCES.anas.url }], A90: [{ nome: 'ANAS', url: TRAFFIC_SOURCES.anas.url }], A91: [{ nome: 'ANAS', url: TRAFFIC_SOURCES.anas.url }],
+  };
+
+  /* sigle delle strade in un testo: "A1, E35" → ['A1'], "SS47 della Valsugana" → ['SS47'] */
+  function roadRefs(text) {
+    const out = [];
+    const re = /\b(A\s?\d{1,2}|RA\s?\d{1,2}|SS\s?\d{1,3}[a-z]{0,3}|SR\s?\d{1,3}|SP\s?\d{1,3})\b/gi;
+    let m;
+    while ((m = re.exec(String(text || '')))) {
+      const r = m[1].toUpperCase().replace(/\s+/g, '');
+      if (!out.includes(r)) out.push(r);
+    }
+    return out;
+  }
+
+  /* gestori di una strada: autostrade dalla tabella, statali e raccordi ANAS, il resto senza gestore noto */
+  function roadOperators(ref) {
+    if (ROAD_OPERATORS[ref]) return ROAD_OPERATORS[ref];
+    if (/^(SS|RA)/.test(ref)) return [{ nome: 'ANAS', url: TRAFFIC_SOURCES.anas.url }];
+    return [];
+  }
+
+  /* link migliore per una segnalazione: il gestore della sua strada, se verificato, altrimenti il CCISS */
+  function sourceForRoads(refs) {
+    for (const r of refs || []) {
+      const op = roadOperators(String(r).toUpperCase().replace(/\s+/g, '')).find((o) => o.url);
+      if (op) return { nome: op.nome, url: op.url };
+    }
+    return { nome: TRAFFIC_SOURCES.cciss.nome, url: TRAFFIC_SOURCES.cciss.url };
+  }
+
+  /* ------------------------------------------------------------------ */
   /* Luoghi e attrazioni lungo il percorso                               */
   /* ------------------------------------------------------------------ */
   const PLACE_LABEL = { museo: 'Museo', castello: 'Castello', archeologia: 'Sito archeologico', chiesa: 'Chiesa o santuario', natura: 'Natura e panorami', parco: 'Parco a tema o zoo', monumento: 'Monumento', attrazione: 'Attrazione' };
@@ -2082,6 +2137,7 @@
     tileKey, tilesAround, tilesForCoords, pointInRings, coordsCovered, tileToElements,
     PARK_NEAR, PARK_FAR, ringArea, parkingKind, pickParkings, nearOfficial, blockersNear, makeRouteWays,
     trafficBoxes, matchIncidents, incidentStatus, trafficDelay,
-    PLACE_LABEL, placeKind, placesFromTile, placeCandidates, pickPlaces, placeEstimateMin, avoidPoints, mergeAvoid, walkEstimate,
+    PLACE_LABEL, placeKind, placesFromTile, placeCandidates, pickPlaces, placeEstimateMin,
+    TRAFFIC_SOURCES, roadRefs, roadOperators, sourceForRoads, avoidPoints, mergeAvoid, walkEstimate,
   };
 });

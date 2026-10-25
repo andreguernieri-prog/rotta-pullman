@@ -809,3 +809,15 @@ test('luoghi: distribuiti lungo il percorso, non tutti nella stessa città', () 
   assert.ok(p.some((x) => x.name === 'Castello lontano'));
   assert.equal(C.pickPlaces(cands, 20).length, 11, 'se avanza posto entrano anche gli altri');
 });
+
+test('fonti su traffico e cantieri: sigle delle strade e gestori', () => {
+  assert.deepEqual(C.roadRefs('A1, E35 · SS 47 della Valsugana · A4 · Via Roma · RA 6'), ['A1', 'SS47', 'A4', 'RA6']);
+  assert.deepEqual(C.roadRefs(''), []);
+  assert.equal(C.roadOperators('A13')[0].url, 'https://www.autostrade.it/');
+  assert.ok(C.roadOperators('A4').some((o) => /Brescia/.test(o.tratto || '') && o.url));
+  assert.equal(C.roadOperators('SS47')[0].nome, 'ANAS');
+  assert.deepEqual(C.roadOperators('SP12'), []);
+  assert.equal(C.sourceForRoads(['A22']).nome, 'Autostrada del Brennero');
+  assert.equal(C.sourceForRoads(['A57']).nome, 'CCISS Viaggiare informati', 'senza sito verificato: CCISS');
+  assert.equal(C.sourceForRoads([]).url, 'https://www.cciss.it/');
+});
