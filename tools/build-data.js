@@ -168,7 +168,7 @@ function createBuilder() {
           if (t.website) x.s = String(t.website).slice(0, 200);
           const k = C.tileKey(c[0], c[1], RIQUADRO_LUOGHI);
           if (!places.has(k)) places.set(k, []);
-          places.get(k).push([ref, r5(c[0]), r5(c[1]), pk, String(t.name).slice(0, 100), x]);
+          places.get(k).push([ref, r5(c[0]), r5(c[1]), pk, String(t['name:it'] || t.name).slice(0, 100), x]);
           stats.luoghi++;
         }
       }

@@ -799,3 +799,13 @@ test('luoghi: entro la distanza dal percorso, i più noti prima, poi in ordine d
   assert.equal(cands.find((p) => p.name === 'Castello vicino').label, 'Castello');
   assert.ok(C.placeEstimateMin(10000) >= 15 && C.placeEstimateMin(10000) <= 17);
 });
+
+test('luoghi: distribuiti lungo il percorso, non tutti nella stessa città', () => {
+  const cands = [];
+  for (let i = 0; i < 10; i++) cands.push({ name: 'Museo ' + i, along: 20000 + i * 100, distM: 100, score: 30 });
+  cands.push({ name: 'Castello lontano', along: 80000, distM: 5000, score: 13 });
+  const p = C.pickPlaces(cands, 4);
+  assert.equal(p.filter((x) => x.name.startsWith('Museo')).length, 3);
+  assert.ok(p.some((x) => x.name === 'Castello lontano'));
+  assert.equal(C.pickPlaces(cands, 20).length, 11, 'se avanza posto entrano anche gli altri');
+});

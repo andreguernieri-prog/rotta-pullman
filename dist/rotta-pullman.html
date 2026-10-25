@@ -3238,9 +3238,21 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
     return out;
   }
 
-  /* i più notevoli (a parità, i più vicini), poi in ordine lungo il percorso */
+  /*
+   * I più notevoli (a parità, i più vicini), distribuiti lungo il percorso: al massimo 3 entro 5 km l'uno dall'altro,
+   * così una città con tanti musei non riempie l'elenco; gli altri entrano solo se avanza posto.
+   * Restituiti in ordine lungo il percorso.
+   */
   function pickPlaces(cands, limit) {
-    return cands.slice().sort((a, b) => b.score - a.score || a.distM - b.distM).slice(0, limit || 40).sort((a, b) => a.along - b.along);
+    const max = limit || 40;
+    const sorted = cands.slice().sort((a, b) => b.score - a.score || a.distM - b.distM);
+    const out = [], rest = [];
+    for (const p of sorted) {
+      const near = out.filter((q) => Math.abs(q.along - p.along) < 5000).length;
+      if (near < 3 && out.length < max) out.push(p); else rest.push(p);
+    }
+    for (const p of rest) { if (out.length >= max) break; out.push(p); }
+    return out.sort((a, b) => a.along - b.along);
   }
 
   /* tempo di andata stimato in minuti, quando il calcolo per il pullman non è disponibile */
