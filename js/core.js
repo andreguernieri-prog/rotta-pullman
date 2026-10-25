@@ -1710,53 +1710,205 @@
   /* ------------------------------------------------------------------ */
   /* Fonti ufficiali su traffico e cantieri                              */
   /* ------------------------------------------------------------------ */
-  // url: solo i siti verificati; per gli altri gestori si indica il nome e si rimanda al CCISS
-  const ASPI = { nome: 'Autostrade per l\'Italia', url: 'https://www.autostrade.it/' };
+  // Siti ufficiali dei gestori, controllati il 25/10/2026 (fonti: siti dei gestori, MIT, ART).
+  // Per i tratti a pagamento con più gestori si va alla pagina del traffico, se esiste.
+  const OP = {
+    aspi: { nome: 'Autostrade per l\'Italia', url: 'https://www.autostrade.it/' },
+    anas: { nome: 'ANAS', url: 'https://www.stradeanas.it/' },
+    brennero: { nome: 'Autostrada del Brennero', url: 'https://www.autobrennero.it/it/viabilita/canali-informativi/' },
+    a4holding: { nome: 'A4 Holding (Brescia–Verona–Vicenza–Padova)', url: 'https://www.a4holding.it/' },
+    cav: { nome: 'Concessioni Autostradali Venete', url: 'https://www.cavspa.it/' },
+    altoAdriatico: { nome: 'Autostrade Alto Adriatico', url: 'https://www.autostradealtoadriatico.it/' },
+    serravalle: { nome: 'Milano Serravalle – Milano Tangenziali', url: 'https://www.serravalle.it/' },
+    satap: { nome: 'SATAP', url: 'https://www.satapweb.it/' },
+    itp: { nome: 'Ivrea Torino Piacenza (ITP)', url: 'https://www.itpspa.it/' },
+    autoviaPadana: { nome: 'Autovia Padana', url: 'https://www.autoviapadana.it/' },
+    sitaf: { nome: 'SITAF', url: 'https://www.sitaf.it/' },
+    sav: { nome: 'Autostrade Valdostane (SAV)', url: 'https://www.sav-a5.it/' },
+    rav: { nome: 'Raccordo Autostradale Valle d\'Aosta (RAV)', url: 'https://www.ravspa.it/' },
+    astiCuneo: { nome: 'Asti-Cuneo', url: 'https://www.asticuneo.it/' },
+    fiori: { nome: 'Autostrada dei Fiori', url: 'https://www.autostradadeifiori.it/' },
+    tirreno: { nome: 'Concessioni del Tirreno', url: 'https://www.concessionideltirreno.it/infoviabilita/' },
+    salt: { nome: 'SALT', url: 'https://www.salt.it/info-traffico/' },
+    sat: { nome: 'Autostrada Tirrenica (SAT)', url: 'https://www.tirrenica.it/' },
+    brebemi: { nome: 'A35 Brebemi', url: 'https://www.brebemi.it/' },
+    pedemontana: { nome: 'Autostrada Pedemontana Lombarda', url: 'https://www.pedemontana.com/' },
+    teem: { nome: 'Tangenziale Esterna (TEEM)', url: 'https://www.tangenziale.esterna.it/infoviabilita/' },
+    tangNapoli: { nome: 'Tangenziale di Napoli', url: 'https://www.tangenzialedinapoli.it/' },
+    spn: { nome: 'Salerno Pompei Napoli', url: 'https://salernopompeinapolispa.it/' },
+    parchi: { nome: 'Strada dei Parchi', url: 'https://www.stradadeiparchi.it/' },
+    cas: { nome: 'Consorzio Autostrade Siciliane', url: 'https://www.autostradesiciliane.it/' },
+  };
   const TRAFFIC_SOURCES = {
     cciss: { nome: 'CCISS Viaggiare informati', url: 'https://www.cciss.it/', nota: 'notiziario nazionale su tutte le strade' },
-    anas: { nome: 'ANAS', url: 'https://www.stradeanas.it/', nota: 'strade statali' },
-  };
-  const ROAD_OPERATORS = {
-    A1: [ASPI], A8: [ASPI], A9: [ASPI], A11: [ASPI], A13: [ASPI], A14: [ASPI], A16: [ASPI], A26: [ASPI], A27: [ASPI], A30: [ASPI],
-    A10: [Object.assign({ tratto: 'Genova–Savona' }, ASPI), { nome: 'Autostrada dei Fiori', tratto: 'Savona–Ventimiglia' }],
-    A12: [Object.assign({ tratto: 'Genova–Sestri Levante, Roma–Civitavecchia' }, ASPI), { nome: 'SALT', tratto: 'Sestri Levante–Livorno' }, { nome: 'SAT', tratto: 'Livorno–Civitavecchia' }],
-    A7: [Object.assign({ tratto: 'Genova–Serravalle' }, ASPI), { nome: 'Milano Serravalle', tratto: 'Serravalle–Milano' }],
-    A23: [{ nome: 'Autostrade Alto Adriatico', tratto: 'Palmanova–Udine' }, Object.assign({ tratto: 'Udine–Tarvisio' }, ASPI)],
-    A4: [{ nome: 'SATAP', tratto: 'Torino–Milano' }, Object.assign({ tratto: 'Milano–Brescia' }, ASPI),
-      { nome: 'Autostrada Brescia Verona Vicenza Padova', tratto: 'Brescia–Padova', url: 'https://www.a4holding.it/' },
-      { nome: 'Concessioni Autostradali Venete', tratto: 'Padova–Venezia e Passante di Mestre' }, { nome: 'Autostrade Alto Adriatico', tratto: 'Venezia–Trieste' }],
-    A31: [{ nome: 'Autostrada Brescia Verona Vicenza Padova', url: 'https://www.a4holding.it/' }],
-    A22: [{ nome: 'Autostrada del Brennero', url: 'https://www.autobrennero.it/it/viabilita/canali-informativi/' }],
-    A57: [{ nome: 'Concessioni Autostradali Venete' }, { nome: 'Autostrade Alto Adriatico' }],
-    A28: [{ nome: 'Autostrade Alto Adriatico' }], A34: [{ nome: 'Autostrade Alto Adriatico' }],
-    A21: [{ nome: 'SATAP' }], A15: [{ nome: 'SALT' }], A6: [{ nome: 'Autostrada dei Fiori' }],
-    A24: [{ nome: 'ANAS', url: TRAFFIC_SOURCES.anas.url }], A25: [{ nome: 'ANAS', url: TRAFFIC_SOURCES.anas.url }],
-    A2: [{ nome: 'ANAS', url: TRAFFIC_SOURCES.anas.url }], A90: [{ nome: 'ANAS', url: TRAFFIC_SOURCES.anas.url }], A91: [{ nome: 'ANAS', url: TRAFFIC_SOURCES.anas.url }],
+    anas: Object.assign({ nota: 'strade statali' }, OP.anas),
   };
 
-  /* sigle delle strade in un testo: "A1, E35" → ['A1'], "SS47 della Valsugana" → ['SS47'] */
+  /*
+   * Autostrade italiane → gestori. Ogni tratto ha un tracciato approssimato (punti lat, lon
+   * lungo l'autostrada): serve a capire quale gestore ha il tratto che percorri e a non
+   * confondere le autostrade estere con la stessa sigla (la A13 austriaca non è la Bologna–Padova).
+   */
+  const T = (op, tratto, ...linee) => Object.assign({ tratto, linee }, op);
+  const ROAD_OPERATORS = {
+    A1: [T(OP.aspi, '', [[45.40, 9.27], [45.30, 9.50], [45.05, 9.70], [44.87, 10.06], [44.80, 10.33], [44.70, 10.63], [44.63, 10.92], [44.53, 11.28], [44.40, 11.25], [44.00, 11.25], [43.80, 11.20], [43.65, 11.45], [43.47, 11.83], [43.03, 11.93], [42.72, 12.10], [42.45, 12.38], [42.15, 12.58], [41.98, 12.60], [41.78, 12.92], [41.62, 13.33], [41.48, 13.83], [41.30, 14.08], [41.10, 14.22], [41.05, 14.33], [40.88, 14.30]])],
+    A2: [T(OP.anas, '', [[40.75, 14.78], [40.60, 15.05], [40.40, 15.58], [40.12, 15.75], [39.90, 15.98], [39.30, 16.25], [38.95, 16.30], [38.68, 16.10], [38.48, 15.98], [38.22, 15.65], [38.11, 15.65]])],
+    A3: [T(OP.spn, '', [[40.85, 14.30], [40.79, 14.37], [40.70, 14.48], [40.74, 14.50], [40.74, 14.64], [40.68, 14.76]])],
+    A4: [
+      T(OP.satap, 'Torino–Milano', [[45.10, 7.72], [45.20, 7.95], [45.37, 8.17], [45.46, 8.62], [45.51, 9.10]]),
+      T(OP.itp, 'Ivrea–Santhià', [[45.45, 7.90], [45.40, 8.05], [45.37, 8.15]]),
+      T(OP.aspi, 'Milano–Brescia', [[45.52, 9.13], [45.54, 9.23], [45.58, 9.40], [45.65, 9.65], [45.56, 10.10], [45.52, 10.20]]),
+      T(OP.a4holding, 'Brescia–Padova', [[45.50, 10.28], [45.46, 10.55], [45.40, 10.95], [45.45, 11.30], [45.53, 11.55], [45.43, 11.85]]),
+      T(OP.cav, 'Padova–Venezia e Passante di Mestre', [[45.42, 11.95], [45.44, 12.10], [45.47, 12.20]], [[45.49, 12.15], [45.55, 12.12], [45.60, 12.25], [45.58, 12.36]]),
+      T(OP.altoAdriatico, 'Venezia–Trieste', [[45.59, 12.40], [45.63, 12.57], [45.77, 12.85], [45.80, 13.05], [45.88, 13.28], [45.82, 13.50], [45.78, 13.62], [45.75, 13.66]]),
+    ],
+    A5: [
+      T(OP.itp, 'Torino–Quincinetto', [[45.12, 7.75], [45.20, 7.78], [45.37, 7.85], [45.46, 7.87], [45.56, 7.81]], [[45.45, 7.90], [45.40, 8.05], [45.37, 8.15]]),
+      T(OP.sav, 'Quincinetto–Aosta', [[45.57, 7.80], [45.60, 7.79], [45.67, 7.69], [45.74, 7.62], [45.74, 7.46], [45.735, 7.36]]),
+      T(OP.rav, 'Aosta–Monte Bianco', [[45.73, 7.30], [45.75, 7.04], [45.80, 6.97], [45.82, 6.96]]),
+    ],
+    A6: [T(OP.fiori, '', [[44.95, 7.70], [44.85, 7.72], [44.65, 7.75], [44.40, 7.82], [44.38, 8.03], [44.37, 8.20], [44.33, 8.35], [44.30, 8.42]])],
+    A7: [
+      T(OP.serravalle, 'Milano–Serravalle', [[45.42, 9.17], [45.20, 9.10], [45.10, 9.00], [44.90, 8.87], [44.72, 8.85]]),
+      T(OP.aspi, 'Serravalle–Genova', [[44.70, 8.86], [44.55, 8.90], [44.42, 8.92]]),
+    ],
+    A8: [T(OP.aspi, '', [[45.52, 9.10], [45.57, 9.03], [45.60, 8.92], [45.62, 8.85], [45.66, 8.79], [45.79, 8.83]], [[45.66, 8.79], [45.72, 8.65], [45.73, 8.60]])],
+    A9: [T(OP.aspi, '', [[45.57, 9.03], [45.63, 9.03], [45.78, 9.07], [45.83, 9.03]])],
+    A10: [
+      T(OP.aspi, 'Genova–Savona', [[44.42, 8.88], [44.43, 8.75], [44.38, 8.55], [44.32, 8.45], [44.30, 8.43]]),
+      T(OP.tirreno, 'Savona–Ventimiglia', [[44.28, 8.40], [44.06, 8.20], [43.90, 7.98], [43.83, 7.78], [43.79, 7.58]]),
+    ],
+    A11: [
+      T(OP.aspi, 'Firenze–Pisa Nord', [[43.80, 11.18], [43.86, 11.07], [43.92, 10.92], [43.88, 10.77], [43.85, 10.65], [43.85, 10.52], [43.75, 10.42]]),
+      T(OP.tirreno, 'Viareggio–Lucca', [[43.88, 10.30], [43.86, 10.42], [43.85, 10.48]]),
+    ],
+    A12: [
+      T(OP.aspi, 'Genova–Sestri Levante, Civitavecchia–Roma', [[44.42, 8.97], [44.35, 9.20], [44.28, 9.40]], [[42.10, 11.82], [41.95, 12.10], [41.82, 12.30]]),
+      T(OP.tirreno, 'Sestri Levante–Livorno', [[44.27, 9.42], [44.15, 9.75], [44.12, 9.90], [44.05, 10.05], [43.98, 10.15], [43.87, 10.27], [43.80, 10.33], [43.71, 10.42], [43.60, 10.40]]),
+      T(OP.sat, 'Livorno–Rosignano, Tarquinia–Civitavecchia', [[43.57, 10.38], [43.40, 10.45], [43.33, 10.50]], [[42.25, 11.75], [42.12, 11.80]]),
+    ],
+    A13: [T(OP.aspi, '', [[44.53, 11.36], [44.67, 11.48], [44.83, 11.62], [45.05, 11.78], [45.24, 11.76], [45.38, 11.88]])],
+    A14: [T(OP.aspi, '', [[44.52, 11.40], [44.35, 11.70], [44.29, 11.88], [44.22, 12.05], [44.15, 12.25], [44.05, 12.55], [43.90, 12.85], [43.55, 13.45], [43.30, 13.70], [42.95, 13.85], [42.45, 14.15], [42.10, 14.68], [41.98, 14.98], [41.48, 15.55], [41.25, 15.90], [41.20, 16.08], [41.08, 16.80], [40.80, 16.92], [40.55, 17.15]], [[44.30, 11.90], [44.40, 12.15]])],
+    A15: [
+      T(OP.salt, 'Parma–La Spezia', [[44.80, 10.30], [44.69, 10.10], [44.50, 9.98], [44.37, 9.88], [44.20, 9.97], [44.15, 9.92]]),
+      T(OP.tirreno, 'raccordo di La Spezia', [[44.14, 9.90], [44.11, 9.84]]),
+    ],
+    A16: [T(OP.aspi, '', [[40.92, 14.35], [40.92, 14.78], [41.08, 15.05], [41.13, 15.53], [41.25, 15.90], [41.22, 16.05]])],
+    A18: [T(OP.cas, '', [[38.20, 15.53], [37.85, 15.27], [37.73, 15.18], [37.62, 15.15], [37.52, 15.05]], [[37.05, 15.25], [36.90, 15.07], [36.80, 14.95], [36.83, 14.75]])],
+    A19: [T(OP.anas, '', [[38.08, 13.42], [37.98, 13.80], [37.55, 14.08], [37.55, 14.30], [37.57, 14.70], [37.45, 15.03]])],
+    A20: [T(OP.cas, '', [[38.20, 15.52], [38.18, 15.25], [38.12, 14.97], [38.05, 14.62], [38.02, 14.03], [37.98, 13.80]])],
+    A21: [
+      T(OP.itp, 'Torino–Piacenza', [[44.98, 7.80], [44.90, 8.20], [44.92, 8.60], [45.03, 8.88], [45.08, 9.30], [45.06, 9.43], [45.05, 9.66]]),
+      T(OP.autoviaPadana, 'Piacenza–Brescia', [[45.06, 9.72], [45.10, 9.90], [45.13, 10.02], [45.30, 10.15], [45.45, 10.20]], [[45.03, 9.80], [44.93, 9.90]]),
+    ],
+    A22: [T(OP.brennero, '', [[47.00, 11.50], [46.88, 11.43], [46.70, 11.65], [46.48, 11.33], [46.07, 11.12], [45.88, 11.02], [45.55, 10.78], [45.40, 10.95], [45.15, 10.80], [44.78, 10.88], [44.62, 10.95]])],
+    A23: [
+      T(OP.altoAdriatico, 'Palmanova–Udine', [[45.90, 13.30], [46.03, 13.24]]),
+      T(OP.aspi, 'Udine–Tarvisio', [[46.08, 13.22], [46.27, 13.13], [46.42, 13.20], [46.50, 13.58]]),
+    ],
+    A24: [T(OP.parchi, '', [[41.90, 12.58], [41.95, 12.80], [42.05, 12.95], [42.10, 13.08], [42.10, 13.25], [42.35, 13.40], [42.43, 13.55], [42.66, 13.70]])],
+    A25: [T(OP.parchi, '', [[42.10, 13.25], [42.03, 13.42], [42.02, 13.65], [42.10, 13.88], [42.20, 13.83], [42.40, 14.15]])],
+    A26: [T(OP.aspi, '', [[44.43, 8.75], [44.63, 8.65], [44.90, 8.62], [45.12, 8.48], [45.32, 8.40], [45.40, 8.37], [45.63, 8.38], [45.76, 8.55], [45.90, 8.50], [45.93, 8.43]])],
+    A27: [T(OP.aspi, '', [[45.50, 12.25], [45.65, 12.25], [45.88, 12.30], [45.98, 12.30], [46.13, 12.25]])],
+    A28: [T(OP.altoAdriatico, '', [[45.78, 12.84], [45.95, 12.50], [45.90, 12.33]])],
+    A29: [T(OP.anas, '', [[38.15, 13.30], [37.98, 12.95], [37.65, 12.60]], [[37.98, 12.95], [38.00, 12.55]])],
+    A30: [T(OP.aspi, '', [[41.05, 14.35], [40.92, 14.53], [40.78, 14.62], [40.70, 14.78]])],
+    A31: [T(OP.a4holding, '', [[45.75, 11.43], [45.70, 11.48], [45.53, 11.55], [45.30, 11.55], [45.10, 11.50]])],
+    A32: [T(OP.sitaf, '', [[45.07, 7.55], [45.08, 7.40], [45.13, 7.05], [45.03, 6.83], [45.08, 6.70]])],
+    A33: [T(OP.astiCuneo, '', [[44.88, 8.22], [44.70, 8.03], [44.65, 7.85], [44.55, 7.65], [44.40, 7.55]])],
+    A34: [T(OP.altoAdriatico, '', [[45.86, 13.45], [45.92, 13.58]])],
+    A35: [T(OP.brebemi, '', [[45.48, 9.40], [45.52, 9.60], [45.53, 9.93], [45.55, 10.12]])],
+    A36: [T(OP.pedemontana, '', [[45.67, 8.83], [45.68, 8.95], [45.70, 9.03], [45.68, 9.12], [45.62, 9.15], [45.62, 9.37]])],
+    A50: [T(OP.serravalle, '', [[45.52, 9.08], [45.48, 9.05], [45.40, 9.13], [45.39, 9.27]])],
+    A51: [T(OP.serravalle, '', [[45.40, 9.27], [45.46, 9.27], [45.53, 9.27], [45.57, 9.33]])],
+    A52: [T(OP.serravalle, '', [[45.53, 9.05], [45.53, 9.13], [45.57, 9.17], [45.58, 9.27]])],
+    A53: [T(OP.serravalle, '', [[45.25, 9.03], [45.20, 9.12]])],
+    A54: [T(OP.serravalle, '', [[45.21, 9.10], [45.17, 9.15], [45.15, 9.18]])],
+    A55: [T(OP.itp, '', [[45.15, 7.77], [45.13, 7.70], [45.10, 7.60], [45.07, 7.55], [45.00, 7.55], [44.98, 7.63], [44.98, 7.70], [44.95, 7.78]], [[44.98, 7.55], [44.88, 7.35]])],
+    A56: [T(OP.tangNapoli, '', [[40.88, 14.30], [40.86, 14.22], [40.83, 14.18], [40.84, 14.10]])],
+    A57: [
+      T(OP.cav, 'Tangenziale di Mestre', [[45.43, 12.15], [45.46, 12.22], [45.50, 12.25], [45.53, 12.27]]),
+      T(OP.altoAdriatico, 'verso Quarto d\'Altino', [[45.54, 12.29], [45.57, 12.37]]),
+    ],
+    A58: [T(OP.teem, '', [[45.58, 9.37], [45.50, 9.43], [45.42, 9.40], [45.35, 9.33]])],
+    A59: [T(OP.pedemontana, '', [[45.77, 9.02], [45.77, 9.06], [45.80, 9.08]])],
+    A60: [T(OP.pedemontana, '', [[45.77, 8.83], [45.78, 8.87]])],
+    A90: [T(OP.anas, '', [[41.99, 12.50], [41.93, 12.62], [41.84, 12.56], [41.83, 12.43], [41.90, 12.37], [41.97, 12.40], [41.99, 12.50]])],
+    A91: [T(OP.anas, '', [[41.85, 12.43], [41.80, 12.30]])],
+  };
+  const OP_MAX_M = 25000; // oltre questa distanza dal tracciato non è quell'autostrada
+
+  /* sigle delle strade in un testo: "A1, E35" → ['A1'], "SS47 della Valsugana" → ['SS47'], "A1var" → ['A1'] */
   function roadRefs(text) {
     const out = [];
-    const re = /\b(A\s?\d{1,2}|RA\s?\d{1,2}|SS\s?\d{1,3}[a-z]{0,3}|SR\s?\d{1,3}|SP\s?\d{1,3})\b/gi;
+    const re = /\b(A\s?\d{1,2}(?:dir|var)?|RA\s?\d{1,2}|SS\s?\d{1,3}[a-z]{0,3}|SR\s?\d{1,3}|SP\s?\d{1,3})\b/gi;
     let m;
     while ((m = re.exec(String(text || '')))) {
-      const r = m[1].toUpperCase().replace(/\s+/g, '');
+      let r = m[1].toUpperCase().replace(/\s+/g, '');
+      if (r[0] === 'A') r = r.replace(/(DIR|VAR)$/, '');
       if (!out.includes(r)) out.push(r);
     }
     return out;
   }
 
-  /* gestori di una strada: autostrade dalla tabella, statali e raccordi ANAS, il resto senza gestore noto */
-  function roadOperators(ref) {
-    if (ROAD_OPERATORS[ref]) return ROAD_OPERATORS[ref];
-    if (/^(SS|RA)/.test(ref)) return [{ nome: 'ANAS', url: TRAFFIC_SOURCES.anas.url }];
+  /* distanza in metri di un punto dal tracciato di un gestore */
+  function distToTratto(p, t) {
+    let best = Infinity;
+    for (const l of t.linee) {
+      for (let i = 0; i + 1 < l.length; i++) best = Math.min(best, pointSegDist(p, l[i], l[i + 1]));
+      if (l.length === 1) best = Math.min(best, haversine(p, l[0]));
+    }
+    return best;
+  }
+
+  /* il gestore del tratto più vicino a un punto; null se il punto non è su quell'autostrada */
+  function operatorAt(ref, p) {
+    let best = null, bestD = OP_MAX_M;
+    for (const t of ROAD_OPERATORS[ref] || []) {
+      const d = distToTratto(p, t);
+      if (d < bestD) { bestD = d; best = t; }
+    }
+    return best;
+  }
+
+  /* gestori di una strada: autostrade dalla tabella (con un punto: solo chi ha quel tratto), statali e raccordi ANAS */
+  function roadOperators(ref, at) {
+    if (ROAD_OPERATORS[ref]) {
+      if (!at) return ROAD_OPERATORS[ref];
+      const t = operatorAt(ref, at);
+      return t ? [t] : [];
+    }
+    if (/^(SS|RA)/.test(ref)) return [OP.anas];
     return [];
   }
 
-  /* link migliore per una segnalazione: il gestore della sua strada, se verificato, altrimenti il CCISS */
-  function sourceForRoads(refs) {
+  /* autostrade italiane del percorso, in ordine, con i soli gestori dei tratti percorsi */
+  function routeOperators(route) {
+    const found = new Map();
+    for (const st of (route && route.steps) || []) {
+      const refs = roadRefs(st.streets).filter((r) => ROAD_OPERATORS[r]);
+      if (!refs.length) continue;
+      const from = Math.max(0, st.from | 0), to = Math.min(route.coords.length - 1, st.to | 0);
+      const stride = Math.max(1, Math.ceil((to - from) / 12));
+      for (const ref of refs) {
+        for (let i = from; ; i = Math.min(to, i + stride)) {
+          const t = operatorAt(ref, route.coords[i]);
+          if (t) {
+            if (!found.has(ref)) found.set(ref, []);
+            if (!found.get(ref).includes(t)) found.get(ref).push(t);
+          }
+          if (i >= to) break;
+        }
+      }
+    }
+    return Array.from(found, ([ref, ops]) => ({ ref, ops }));
+  }
+
+  /* link migliore per una segnalazione: il gestore della sua strada (del tratto, se si sa dove), altrimenti il CCISS */
+  function sourceForRoads(refs, at) {
     for (const r of refs || []) {
-      const op = roadOperators(String(r).toUpperCase().replace(/\s+/g, '')).find((o) => o.url);
+      const ref = roadRefs(r)[0] || String(r).toUpperCase().replace(/\s+/g, '');
+      const op = roadOperators(ref, at).find((o) => o.url);
       if (op) return { nome: op.nome, url: op.url };
     }
     return { nome: TRAFFIC_SOURCES.cciss.nome, url: TRAFFIC_SOURCES.cciss.url };
@@ -2138,6 +2290,6 @@
     PARK_NEAR, PARK_FAR, ringArea, parkingKind, pickParkings, nearOfficial, blockersNear, makeRouteWays,
     trafficBoxes, matchIncidents, incidentStatus, trafficDelay,
     PLACE_LABEL, placeKind, placesFromTile, placeCandidates, pickPlaces, placeEstimateMin,
-    TRAFFIC_SOURCES, roadRefs, roadOperators, sourceForRoads, avoidPoints, mergeAvoid, walkEstimate,
+    TRAFFIC_SOURCES, roadRefs, roadOperators, routeOperators, sourceForRoads, avoidPoints, mergeAvoid, walkEstimate,
   };
 });

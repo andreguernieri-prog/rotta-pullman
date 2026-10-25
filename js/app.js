@@ -2116,7 +2116,7 @@
       h('div', { class: 'hz-links' },
         x.st.state === 'attivo' ? h('button', { type: 'button', onclick: () => avoidHazard({ alongStart: x.alongStart, alongEnd: x.alongEnd, title: trTitle(x), name: x.from && x.to ? `${x.from} → ${x.to}` : '', ids: ['traffico/' + x.id] }) }, 'Evita questo punto') : null,
         h('a', { href: `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${x.lat.toFixed(6)},${x.lon.toFixed(6)}`, target: '_blank', rel: 'noopener' }, 'Street View'),
-        (() => { const src = C.sourceForRoads(x.roads); return h('a', { href: src.url, target: '_blank', rel: 'noopener' }, 'Fonte: ' + src.nome); })()),
+        trSourceLink(x)),
       h('p', { class: 'hz-meta', text: 'Fonte: TomTom Traffic' + (state.traffic && state.traffic.updatedAt ? `, aggiornato alle ${C.fmtClock(state.traffic.updatedAt)}` : '') + '.' }));
   }
 
@@ -2144,23 +2144,26 @@
         x.rel === 'vicino' ? h('span', { class: 'maybe-tag', text: 'Carreggiata non certa' }) : null,
         h('span', { class: 'hz-links' },
           h('button', { type: 'button', onclick: () => { flyTo(x.lat, x.lon, 15); } }, 'Mostra sulla mappa'),
-          (() => { const src = C.sourceForRoads(x.roads); return h('a', { href: src.url, target: '_blank', rel: 'noopener' }, 'Fonte: ' + src.nome); })(),
+          trSourceLink(x),
           x.st.state === 'attivo' ? h('button', { type: 'button', onclick: () => avoidHazard({ alongStart: x.alongStart, alongEnd: x.alongEnd, title: trTitle(x), name: x.from && x.to ? `${x.from} → ${x.to}` : '', ids: ['traffico/' + x.id] }) }, 'Evita questo punto') : null)));
   }
 
-  /* fonti ufficiali: CCISS, i gestori delle autostrade del percorso, ANAS */
+  /* sito del gestore della strada nel punto segnalato (o il CCISS) */
+  function trSourceLink(x) {
+    const src = C.sourceForRoads(x.roads, [x.lat, x.lon]);
+    return h('a', { href: src.url, target: '_blank', rel: 'noopener' }, 'Fonte: ' + src.nome);
+  }
+
+  /* fonti ufficiali: CCISS, i gestori dei tratti di autostrada percorsi, ANAS */
   function trafficSources() {
     const r = state.route;
-    const refs = r ? C.roadRefs(r.steps.map((s) => s.streets).join(' · ')) : [];
     const link = (o) => (o.url ? h('a', { href: o.url, target: '_blank', rel: 'noopener' }, o.nome) : h('span', { text: o.nome }));
     const ul = h('ul');
     ul.append(h('li', null, link(C.TRAFFIC_SOURCES.cciss), ' · ' + C.TRAFFIC_SOURCES.cciss.nota));
     let unlinked = false;
-    for (const m of refs.filter((x) => /^A\d/.test(x))) {
-      const ops = C.roadOperators(m);
-      if (!ops.length) continue;
+    for (const { ref, ops } of r ? C.routeOperators(r) : []) {
       if (ops.some((o) => !o.url)) unlinked = true;
-      ul.append(h('li', null, h('b', { text: m + ': ' }), ...ops.flatMap((o, i) => [i ? ' · ' : '', link(o), o.tratto ? ` (${o.tratto})` : ''])));
+      ul.append(h('li', null, h('b', { text: ref + ': ' }), ...ops.flatMap((o, i) => [i ? ' · ' : '', link(o), o.tratto ? ` (${o.tratto})` : ''])));
     }
     ul.append(h('li', null, link(C.TRAFFIC_SOURCES.anas), ' · ' + C.TRAFFIC_SOURCES.anas.nota));
     return h('div', { class: 'tr-sources' },

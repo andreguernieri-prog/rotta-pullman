@@ -812,12 +812,48 @@ test('luoghi: distribuiti lungo il percorso, non tutti nella stessa città', () 
 
 test('fonti su traffico e cantieri: sigle delle strade e gestori', () => {
   assert.deepEqual(C.roadRefs('A1, E35 · SS 47 della Valsugana · A4 · Via Roma · RA 6'), ['A1', 'SS47', 'A4', 'RA6']);
+  assert.deepEqual(C.roadRefs('A1var · A14dir · A4/A5'), ['A1', 'A14', 'A4', 'A5']);
   assert.deepEqual(C.roadRefs(''), []);
   assert.equal(C.roadOperators('A13')[0].url, 'https://www.autostrade.it/');
   assert.ok(C.roadOperators('A4').some((o) => /Brescia/.test(o.tratto || '') && o.url));
   assert.equal(C.roadOperators('SS47')[0].nome, 'ANAS');
   assert.deepEqual(C.roadOperators('SP12'), []);
   assert.equal(C.sourceForRoads(['A22']).nome, 'Autostrada del Brennero');
-  assert.equal(C.sourceForRoads(['A57']).nome, 'CCISS Viaggiare informati', 'senza sito verificato: CCISS');
+  assert.equal(C.sourceForRoads(['A57']).nome, 'Concessioni Autostradali Venete');
   assert.equal(C.sourceForRoads([]).url, 'https://www.cciss.it/');
+});
+
+test('gestori autostradali: tutti con il sito, e quello giusto per ogni tratto', () => {
+  for (const n of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 90, 91]) {
+    const ops = C.roadOperators('A' + n);
+    assert.ok(ops.length, 'A' + n + ' senza gestore');
+    for (const o of ops) assert.match(o.url, /^https:\/\//, 'A' + n + ': ' + o.nome + ' senza sito');
+  }
+  const at = (ref, p) => C.roadOperators(ref, p).map((o) => o.nome);
+  assert.deepEqual(at('A4', [45.46, 8.62]), ['SATAP'], 'Novara');
+  assert.deepEqual(at('A4', [45.65, 9.66]), ['Autostrade per l\'Italia'], 'Bergamo');
+  assert.deepEqual(at('A4', [45.41, 10.96]), ['A4 Holding (Brescia–Verona–Vicenza–Padova)'], 'Verona');
+  assert.deepEqual(at('A4', [45.80, 13.10]), ['Autostrade Alto Adriatico'], 'Latisana');
+  assert.deepEqual(at('A12', [43.82, 10.32]), ['Concessioni del Tirreno'], 'Viareggio');
+  assert.deepEqual(at('A12', [41.93, 12.13]), ['Autostrade per l\'Italia'], 'Civitavecchia–Roma');
+  assert.deepEqual(at('A10', [43.82, 7.75]), ['Concessioni del Tirreno'], 'Sanremo');
+  assert.deepEqual(at('A5', [45.80, 6.98]), ['Raccordo Autostradale Valle d\'Aosta (RAV)'], 'Courmayeur');
+  assert.deepEqual(at('A21', [45.13, 10.03]), ['Autovia Padana'], 'Cremona');
+  assert.deepEqual(at('A24', [42.35, 13.40]), ['Strada dei Parchi'], 'L\'Aquila');
+  assert.deepEqual(at('A13', [47.20, 11.40]), [], 'la A13 austriaca non è la Bologna–Padova');
+  assert.equal(C.sourceForRoads(['A4'], [45.70, 13.70]).nome, 'Autostrade Alto Adriatico');
+  assert.equal(C.sourceForRoads(['A 13'], [47.20, 11.40]).nome, 'CCISS Viaggiare informati');
+});
+
+test('gestori dei tratti di autostrada percorsi, in ordine', () => {
+  const coords = [[45.48, 9.20], [45.52, 9.20], [45.60, 9.50], [45.65, 9.65], [45.55, 10.05], [45.48, 10.40], [45.40, 10.95], [45.53, 11.55], [45.43, 11.85], [45.44, 12.10], [47.20, 11.40], [47.10, 11.45]];
+  const route = { coords, steps: [
+    { from: 0, to: 1, streets: 'Via Roma' },
+    { from: 1, to: 9, streets: 'A4, E70' },
+    { from: 10, to: 11, streets: 'A13' },
+  ] };
+  const ro = C.routeOperators(route);
+  assert.deepEqual(ro.map((g) => g.ref), ['A4'], 'la A13 estera non conta');
+  assert.deepEqual(ro[0].ops.map((o) => o.nome), ['Autostrade per l\'Italia', 'A4 Holding (Brescia–Verona–Vicenza–Padova)', 'Concessioni Autostradali Venete']);
+  assert.deepEqual(C.routeOperators(null), []);
 });
