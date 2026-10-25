@@ -187,6 +187,7 @@ function mockOverpass(data) {
     return { elements };
   }
   const c = mocks.fixedCoords || mocks.lastCoords;
+  if (!c) return { elements: [] }; // richiesta rimasta in sospeso da uno scenario già chiuso
   const sv = (frac, m, id, name) => Object.assign({ type: 'way', id, tags: { highway: 'services', name } }, { center: offsetPoint(c, frac, m) });
   return {
     elements: [
@@ -300,7 +301,12 @@ function mockTomTom(url) {
 
 let tilePng = null;
 async function setupRoutes(context) {
-  await context.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
+  // un errore nel simulatore non deve fermare tutti i test: la richiesta fallisce e basta
+  await context.route(/^https?:\/\/(?!127\.0\.0\.1)/, (route) => mockRoute(route).catch(() => route.abort().catch(() => {})));
+}
+
+async function mockRoute(route) {
+  {
     const url = route.request().url();
     const json = (o, status) => route.fulfill({ status: status || 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(o) });
     if (url.includes('valhalla1.openstreetmap.de/sources_to_targets')) {
@@ -362,7 +368,7 @@ async function setupRoutes(context) {
       if (fs.existsSync(f)) return route.fulfill({ status: 200, contentType: 'font/woff2', body: fs.readFileSync(f) });
     }
     return route.abort();
-  });
+  }
 }
 
 /* ---------------- scenari ---------------- */
