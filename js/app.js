@@ -2039,6 +2039,7 @@
     }
     drawTraffic(); renderTraffic(); renderCheck(); renderSummary();
     scheduleTrafficRefresh(my);
+    if (state.traffic.status === 'done') runNews(my, signal);
     if (state.analysis && state.analysis.status === 'done') maybeAvoid(my);
   }
 
@@ -2152,14 +2153,94 @@
         x.rel === 'vicino' ? h('span', { class: 'maybe-tag', text: 'Carreggiata non certa' }) : null,
         h('span', { class: 'hz-links' },
           h('button', { type: 'button', onclick: () => { flyTo(x.lat, x.lon, 15); } }, 'Mostra sulla mappa'),
-          trSourceLink(x),
-          x.st.state === 'attivo' ? h('button', { type: 'button', onclick: () => avoidHazard({ alongStart: x.alongStart, alongEnd: x.alongEnd, title: trTitle(x), name: x.from && x.to ? `${x.from} → ${x.to}` : '', ids: ['traffico/' + x.id] }) }, 'Evita questo punto') : null)));
+          x.st.state === 'attivo' ? h('button', { type: 'button', onclick: () => avoidHazard({ alongStart: x.alongStart, alongEnd: x.alongEnd, title: trTitle(x), name: x.from && x.to ? `${x.from} → ${x.to}` : '', ids: ['traffico/' + x.id] }) }, 'Evita questo punto') : null,
+          trSourceLink(x))));
   }
 
-  /* sito del gestore della strada nel punto segnalato (o il CCISS) */
+  /*
+   * Comunicato ufficiale del gestore sulla segnalazione: l'articolo specifico, cercato nei comunicati di
+   * Autostrade per l'Italia o nell'archivio del sito degli altri gestori. Se non c'è, lo si dice.
+   */
+  const newsByIncident = new Map(); // id segnalazione → { status: 'loading' | 'done' | 'none', op, item, at }
+  const newsCache = new Map();      // gestore|ricerca → { at, p }
+  const NEWS_TTL = 20 * 60e3;
+
+  function searchNews(op, q, signal) {
+    const key = (op.news.base || op.news.kind) + '|' + q.toLowerCase();
+    const c = newsCache.get(key);
+    if (c && Date.now() - c.at < NEWS_TTL) return c.p;
+    const p = (op.news.kind === 'aspi' ? API.aspiBulletins(q, signal) : API.wpPosts(op.news.base, q, signal))
+      .catch((e) => { newsCache.delete(key); if (e.code === 'aborted') throw e; return []; });
+    newsCache.set(key, { at: Date.now(), p });
+    return p;
+  }
+
+  async function findNews(x, op, signal) {
+    let list = [];
+    for (const q of C.incidentPlaces(x).slice(0, 2)) list = list.concat(await searchNews(op, q, signal));
+    const now = Date.now();
+    let item = C.matchNews(x, list, now);
+    if (!item && op.news.kind === 'wp') item = C.matchNewsSummary(x, await searchNews(op, 'chiusure', signal), now);
+    return item;
+  }
+
+  /* dopo il traffico: un comunicato per ogni segnalazione, due ricerche alla volta al massimo */
+  async function runNews(my, signal) {
+    const todo = [];
+    for (const x of trafficWithStatus()) {
+      if (x.st.state === 'finito') continue;
+      const op = C.incidentOperator(x.roads, [x.lat, x.lon]);
+      const cur = newsByIncident.get(x.id);
+      if (!op || !op.news) { newsByIncident.set(x.id, { status: 'none', op }); continue; }
+      if (cur && cur.status === 'done' && Date.now() - cur.at < NEWS_TTL) continue;
+      if (!cur || cur.status !== 'done') newsByIncident.set(x.id, { status: 'loading', op });
+      todo.push({ x, op });
+    }
+    updateNewsLinks();
+    let next = 0;
+    const worker = async () => {
+      while (next < todo.length) {
+        const { x, op } = todo[next++];
+        let item = null;
+        try { item = await findNews(x, op, signal); } catch (e) { if (e.code === 'aborted') return; }
+        if (my !== seq) return;
+        newsByIncident.set(x.id, { status: 'done', op, item, at: Date.now() });
+        updateNewsLinks(x.id);
+      }
+    };
+    await Promise.all([worker(), worker()]);
+  }
+
+  /* aggiorna i link già mostrati (elenco e scheda aperta) senza ridisegnare */
+  function updateNewsLinks(id) {
+    const list = trafficWithStatus();
+    for (const el of document.querySelectorAll('[data-news]')) {
+      if (id != null && el.dataset.news !== String(id)) continue;
+      const x = list.find((y) => String(y.id) === el.dataset.news);
+      if (x) el.replaceWith(trSourceLink(x));
+    }
+  }
+
+  function newsTitle(n) {
+    const t = n.title.length > 120 ? n.title.slice(0, 117).replace(/\s+\S*$/, '') + '…' : n.title;
+    const d = n.date != null ? new Date(n.date).toLocaleDateString('it-IT', { day: 'numeric', month: 'short' }) : '';
+    return t + (d ? ` (${d})` : '');
+  }
+
+  /* link al comunicato del gestore sulla segnalazione */
   function trSourceLink(x) {
-    const src = C.sourceForRoads(x.roads, [x.lat, x.lon]);
-    return h('a', { href: src.url, target: '_blank', rel: 'noopener' }, 'Fonte: ' + src.nome);
+    const n = newsByIncident.get(x.id);
+    const op = n ? n.op : C.incidentOperator(x.roads, [x.lat, x.lon]);
+    const attrs = { 'data-news': String(x.id) };
+    if (n && n.item) {
+      return h('a', Object.assign({ href: n.item.url, target: '_blank', rel: 'noopener', class: 'tr-news' }, attrs),
+        h('span', { class: 'tr-news-lab', text: n.item.riepilogo ? `Riepilogo chiusure di ${op.nome}` : `Comunicato di ${op.nome}` }),
+        h('span', { text: newsTitle(n.item) }));
+    }
+    if (n && n.status === 'loading') return h('span', Object.assign({ class: 'tr-news none', text: `Cerco il comunicato di ${op.nome}…` }, attrs));
+    const why = !op ? 'Strada senza gestore noto' : !op.news ? `Per ${op.nome} l'app non può cercare i comunicati` : `Nessun comunicato di ${op.nome} su questo evento`;
+    const general = op ? h('a', { href: op.url, target: '_blank', rel: 'noopener' }, 'sito di ' + op.nome) : h('a', { href: C.TRAFFIC_SOURCES.cciss.url, target: '_blank', rel: 'noopener' }, 'notiziario CCISS');
+    return h('span', Object.assign({ class: 'tr-news none' }, attrs), why + ' · ', general);
   }
 
   /* fonti ufficiali: CCISS, i gestori dei tratti di autostrada percorsi, ANAS */

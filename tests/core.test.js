@@ -922,3 +922,62 @@ test('ZTL: attraversamenti del percorso, strada di confine, tappe dentro e punti
   assert.equal(C.zoneAvoidPoints([Object.assign({ st }, x3[0])], r3, []).length, 0, 'tappa dentro: non si evita');
   assert.equal(C.zoneAvoidPoints([Object.assign({ st: { state: 'non attivo' } }, x1[0])], r1, []).length, 0);
 });
+
+test('comunicati dei gestori: elenco di Autostrade per l\'Italia e articoli WordPress', () => {
+  const html = `<div class="ajax_load row">
+<div class="col-lg-6 mb-3"><div class="pad-round-news">
+<div class="py-3">
+21 ottobre 2026
+</div>
+<div class="p-2">
+<a class="stretched-link h4" href="/it/comunicazione-e-media/comunicati-stampa-viabilita/-/bulletin/view/9cdc49bc-47dc-4443-936e-6d29601e3c73">A1 MILANO-NAPOLI: CHIUSURE NOTTURNE DEL TRATTO MODENA NORD-MODENA SUD IN ENTRAMBE LE DIREZIONI
+</a></div></div></div>
+<div class="col-lg-6 mb-3"><div class="pad-round-news"><div class="py-3">
+19 ottobre 2026
+</div><div class="p-2"><a class="stretched-link h4" href="/it/x/-/bulletin/view/301e0aeb">A1 MILANO-NAPOLI: CHIUSA PER UNA NOTTE IN MODALITA&#39; ALTERNATA LA STAZIONE DI VALSAMOGGIA</a></div></div></div>`;
+  const l = C.parseAspiBulletins(html);
+  assert.equal(l.length, 2);
+  assert.equal(l[0].title, 'A1 MILANO-NAPOLI: CHIUSURE NOTTURNE DEL TRATTO MODENA NORD-MODENA SUD IN ENTRAMBE LE DIREZIONI');
+  assert.equal(l[0].url, 'https://www.autostrade.it/it/comunicazione-e-media/comunicati-stampa-viabilita/-/bulletin/view/9cdc49bc-47dc-4443-936e-6d29601e3c73');
+  assert.equal(new Date(l[0].date).getDate(), 21);
+  assert.match(l[1].title, /MODALITA' ALTERNATA/);
+  const wp = C.parseWpPosts([{ date: '2026-10-23T16:25:02', link: 'https://www.concessionideltirreno.it/riepilogo/', title: { rendered: 'Riepilogo chiusure tratta A12 Sestri Levante&#8211;Livorno' } }, { link: 'javascript:x', title: { rendered: 'no' } }]);
+  assert.deepEqual(wp.map((n) => n.title), ['Riepilogo chiusure tratta A12 Sestri Levante–Livorno']);
+  assert.deepEqual(C.incidentOperator(['A1'], [44.55, 11.1]).news, { kind: 'aspi' });
+  assert.deepEqual(C.incidentOperator(['A12'], [43.8, 10.33]).news, { kind: 'wp', base: 'https://www.concessionideltirreno.it/' });
+  assert.equal(C.incidentOperator(['SS65'], [44.3, 11.3]).news, undefined, 'ANAS: niente ricerca');
+});
+
+test('comunicati dei gestori: il comunicato giusto per la segnalazione', () => {
+  const d = (s) => new Date(s + 'T12:00:00').getTime();
+  const B = (title, day, id) => ({ title, date: d(day), url: 'https://www.autostrade.it/b/' + id });
+  const list = [
+    B('A14 BOLOGNA-TARANTO: CHIUSO STANOTTE IL TRATTO ALLACCIAMENTO A1-ALLACCIAMENTO RACCORDO CASALECCHIO VERSO ANCONA', '2026-10-24', 1),
+    B('A1 MILANO-NAPOLI: CHIUSA PER CINQUE ORE NOTTURNE IN MODALITA\' ALTERNATA L\'USCITA DI VALSAMOGGIA DA ENTRAMBE LE PROVENIENZE', '2026-10-21', 2),
+    B('A1 MILANO-NAPOLI: CHIUSURAE NOTTURNE AREA DI SERVIZIO SECCHIA OVEST', '2026-10-24', 3),
+    B('A1 MILANO-NAPOLI: CHIUSURE NOTTURNE DEL TRATTO MODENA NORD-MODENA SUD IN ENTRAMBE LE DIREZIONI', '2026-10-21', 4),
+    B('A1 MILANO-NAPOLI: INCIDENTE RISOLTO NEL TRATTO COMPRESO TRA VALSAMOGGIA E IL BIVIO CON LA A14 BOLOGNA-TARANTO', '2026-10-09', 5),
+  ];
+  // il caso dello screenshot: A1 chiusa tra Valsamoggia e Modena Nord per lavori, dal 25 ottobre
+  const x = { cat: 'chiusura', desc: 'Chiuso · Lavori in corso', roads: ['A1', 'E35', 'E45'], from: 'Valsamoggia (Milano-Napoli/A1)', to: 'Modena Nord (Milano-Napoli/A1)', start: '2026-10-25T21:11:00Z' };
+  assert.deepEqual(C.incidentPlaces(x), ['Valsamoggia', 'Modena Nord']);
+  assert.equal(C.matchNews(x, list, d('2026-10-26')).url, 'https://www.autostrade.it/b/4');
+  // coda per incidente tra le due località: il comunicato dell'incidente, se è recente
+  const coda = { cat: 'coda', desc: 'Incidente', roads: ['A1'], from: 'Valsamoggia', to: 'Bivio A1/A14' };
+  assert.equal(C.matchNews(coda, list, d('2026-10-10')).url, 'https://www.autostrade.it/b/5');
+  assert.equal(C.matchNews(coda, list, d('2026-10-30')), null, 'comunicato troppo vecchio');
+  // altra autostrada, solo l'area di servizio, nessuna località: niente
+  assert.equal(C.matchNews(Object.assign({}, x, { roads: ['A13'] }), list, d('2026-10-26')), null);
+  assert.equal(C.matchNews({ cat: 'chiusura', roads: ['A1'], from: 'Secchia', to: '' }, list, d('2026-10-26')), null);
+  assert.equal(C.matchNews({ cat: 'cantiere', roads: ['A1'], from: '', to: '' }, list, d('2026-10-26')), null);
+  // riepilogo settimanale delle chiusure (Concessioni del Tirreno), della stessa autostrada
+  const wp = [
+    { title: 'Riepilogo chiusure tratta A10 Savona-Ventimiglia', date: d('2026-10-23'), url: 'https://cdt/a10' },
+    { title: 'Riepilogo chiusure tratta A12 Sestri Levante-Livorno', date: d('2026-10-23'), url: 'https://cdt/a12' },
+    { title: 'Chiusura Area di Servizio Versilia Est', date: d('2026-10-24'), url: 'https://cdt/as' },
+  ];
+  const s = C.matchNewsSummary({ cat: 'chiusura', roads: ['A12'] }, wp, d('2026-10-26'));
+  assert.equal(s.url, 'https://cdt/a12'); assert.equal(s.riepilogo, true);
+  assert.equal(C.matchNewsSummary({ cat: 'coda', roads: ['A12'] }, wp, d('2026-10-26')), null);
+  assert.equal(C.matchNewsSummary({ cat: 'chiusura', roads: ['A12'] }, wp, d('2026-11-20')), null, 'riepilogo vecchio');
+});

@@ -521,6 +521,21 @@ out body geom;`;
     return out;
   }
 
+  /* ------------------------------ Comunicati dei gestori ------------------------------ */
+  // ricerca nei comunicati di viabilità di Autostrade per l'Italia (pagina consultabile dal browser)
+  URLS.aspiNews = 'https://www.autostrade.it/it/comunicazione-e-media/comunicati-stampa-viabilita/-/bulletin/search?q=';
+  async function aspiBulletins(q, signal) {
+    const r = await request(URLS.aspiNews + encodeURIComponent(q), { signal }, 15000);
+    if (!r.ok) throw new ServiceError('Comunicati non disponibili.', 'news');
+    return C.parseAspiBulletins(r.text);
+  }
+  /* ricerca negli articoli di un sito WordPress di un gestore */
+  async function wpPosts(base, q, signal) {
+    const r = await request(base + 'wp-json/wp/v2/posts?search=' + encodeURIComponent(q) + '&per_page=20&_fields=date,link,title', { signal }, 15000);
+    if (!r.ok) throw new ServiceError('Comunicati non disponibili.', 'news');
+    return C.parseWpPosts(r.data);
+  }
+
   /* riquadri delle ZTL e zone a basse emissioni (cartella zone/) */
   async function dataZones(index, keys, signal) {
     const wanted = keys.filter((k) => index.zone && index.zone[k]);
@@ -696,5 +711,5 @@ out body geom;`;
     return { image: list[0] || null, signs };
   }
 
-  root.RPServices = { URLS, ServiceError, geocode, geocodeFallback, reverse, routeValhalla, routeOrs, corridor, corridorQuery, parkings, valhallaBody, comuneAt, sleep, dataIndex, dataTiles, dataPlaces, dataZones, valhallaMatrix, wikiSummary, tomtomRoute, tomtomIncidents, mapillaryNear, traceWays };
+  root.RPServices = { URLS, ServiceError, geocode, geocodeFallback, reverse, routeValhalla, routeOrs, corridor, corridorQuery, parkings, valhallaBody, comuneAt, sleep, dataIndex, dataTiles, dataPlaces, dataZones, aspiBulletins, wpPosts, valhallaMatrix, wikiSummary, tomtomRoute, tomtomIncidents, mapillaryNear, traceWays };
 })(typeof self !== 'undefined' ? self : this);

@@ -35,7 +35,7 @@ function serve() {
 
 /* ---------------- servizi simulati ---------------- */
 const VIA_A1 = [[45.4860, 9.2044], [45.40, 9.33], [45.31, 9.50], [45.05, 9.70], [44.80, 10.33], [44.65, 10.93], [44.50, 11.34], [44.25, 11.30], [43.95, 11.20], [43.7629, 11.2650]];
-const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null, tomtomUrls: [], vicino: false, orario: false, dateTimes: [], parkNoBus: false, blockDest: false, unreachableDest: false, honorExclude: false, fixedCoords: null, valhallaBodies: [], viaduct: false, traceFail: false, traceCalls: 0, traffic: false, incidentCalls: 0, places: false, unreachablePlace: null, matrixCalls: 0, ztl: false, senzaLimiti: false };
+const mocks = { forceRouteError: false, lastCoords: null, corridorCalls: 0, failCorridor: new Set(), corridorSeen: 0, delay: 0, parkingFail: 0, inflight: 0, maxInflight: 0, parkingQueries: [], dati: false, datiRichieste: 0, datiCopertura: null, tomtomUrls: [], vicino: false, orario: false, dateTimes: [], parkNoBus: false, blockDest: false, unreachableDest: false, honorExclude: false, fixedCoords: null, valhallaBodies: [], viaduct: false, traceFail: false, traceCalls: 0, traffic: false, incidentCalls: 0, places: false, unreachablePlace: null, matrixCalls: 0, ztl: false, senzaLimiti: false, newsQueries: [] };
 
 function densify(pts, step) {
   const out = [];
@@ -122,6 +122,25 @@ function mockIncidents(url) {
   ];
   const inBox = (x) => { const [lo, la] = x.geometry.coordinates[0]; return lo >= bbox[0] && lo <= bbox[2] && la >= bbox[1] && la <= bbox[3]; };
   return { incidents: all.filter(inBox) };
+}
+
+/* ricerca nei comunicati di Autostrade per l'Italia: la pagina con l'elenco, come quella vera */
+function mockAspiNews(q) {
+  mocks.newsQueries.push(q);
+  const oggi = new Date().toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' });
+  const all = [
+    ['prova-coda', 'A1 MILANO-NAPOLI: CODA PER INCIDENTE NEL TRATTO COMPRESO TRA PARMA E REGGIO EMILIA IN DIREZIONE BOLOGNA'],
+    ['prova-uscita', 'A1 MILANO-NAPOLI: CHIUSA PER UNA NOTTE L&#39;USCITA DELLA STAZIONE DI PARMA'],
+    ['prova-a14', 'A14 BOLOGNA-TARANTO: CODA PER INCIDENTE TRA PARMA E REGGIO EMILIA'],
+  ].filter(([, title]) => title.includes(q.toUpperCase()));
+  return '<div class="ajax_load row">' + all.map(([id, title]) => `
+<div class="col-lg-6 mb-3"><div class="pad-round-news">
+<div class="py-3">
+${oggi}
+</div>
+<div class="p-2">
+<a class="stretched-link h4" href="/it/comunicazione-e-media/comunicati-stampa-viabilita/-/bulletin/view/${id}">${title}</a>
+</div></div></div>`).join('') + '</div>';
 }
 
 /* strade percorse (trace_attributes): le vie dei limiti che coincidono col percorso sono quelle percorse;
@@ -337,6 +356,9 @@ async function mockRoute(route) {
     if (url.startsWith('https://upload.example/')) return route.fulfill({ status: 200, contentType: 'image/png', body: tilePng });
     if (url.includes('valhalla1.openstreetmap.de/trace_attributes')) { const r = mockTrace(route.request().postData()); return json(r.body, r.status); }
     if (url.includes('valhalla1.openstreetmap.de/route')) { const r = mockValhalla(url); return json(r.body, r.status); }
+    if (url.startsWith('https://www.autostrade.it/it/comunicazione-e-media/comunicati-stampa-viabilita/-/bulletin/search')) {
+      return route.fulfill({ status: 200, contentType: 'text/html;charset=UTF-8', headers: { 'Access-Control-Allow-Origin': '*' }, body: mockAspiNews(new URL(url).searchParams.get('q') || '') });
+    }
     if (url.includes('photon.komoot.io')) return json(mockPhoton(url));
     if (url.includes('nominatim.openstreetmap.org/reverse')) return json(mockNominatimReverse(url));
     if (url.includes('nominatim.openstreetmap.org')) return json([]);
@@ -1040,6 +1062,14 @@ async function mockRoute(route) {
       assert.match(await q.textContent('#check-banner'), /Traffico e cantieri al tuo passaggio: 1 strada chiusa, 2 altre segnalazioni/);
       assert.equal(await q.locator('.tr-marker').count(), 4);
       assert.match(await q.getAttribute('#traffic a:has-text("CCISS Viaggiare informati")', 'href'), /cciss\.it/);
+      // per ogni segnalazione il comunicato specifico del gestore, se c'è
+      await q.waitForFunction(() => /Comunicato di Autostrade per l'Italia/.test(document.querySelector('#traffic').textContent), null, { timeout: 15000 });
+      const coda = q.locator('#traffic .hz.tr', { hasText: 'Coda · A1' });
+      assert.match(await coda.locator('a.tr-news').getAttribute('href'), /^https:\/\/www\.autostrade\.it\/.*\/bulletin\/view\/prova-coda$/);
+      assert.match(await coda.textContent(), /Comunicato di Autostrade per l'Italia\s*A1 MILANO-NAPOLI: CODA PER INCIDENTE NEL TRATTO COMPRESO TRA PARMA E REGGIO EMILIA/);
+      assert.ok(mocks.newsQueries.includes('Parma') && mocks.newsQueries.includes('Reggio Emilia'));
+      assert.match(await q.locator('#traffic .hz.tr', { hasText: 'Strada chiusa · SS65' }).textContent(), /Per ANAS l'app non può cercare i comunicati · sito di ANAS/);
+      assert.match(await q.locator('#traffic .hz.tr', { hasText: 'Lavori in corso' }).textContent(), /Nessun comunicato di Autostrade per l'Italia su questo evento/);
       const before = mocks.incidentCalls;
       await q.click('#traffic button:has-text("Aggiorna il traffico")');
       for (let i = 0; i < 50 && mocks.incidentCalls === before; i++) await q.waitForTimeout(100);

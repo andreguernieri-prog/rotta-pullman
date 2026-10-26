@@ -1739,6 +1739,12 @@
     parchi: { nome: 'Strada dei Parchi', url: 'https://www.stradadeiparchi.it/' },
     cas: { nome: 'Consorzio Autostrade Siciliane', url: 'https://www.autostradesiciliane.it/' },
   };
+  // dove l'app può cercare i comunicati del gestore: ricerca dei comunicati di Autostrade per l'Italia,
+  // o l'archivio WordPress del sito (entrambi consultabili dal browser)
+  OP.aspi.news = { kind: 'aspi' };
+  for (const k of ['tirreno', 'salt', 'fiori', 'satap', 'teem', 'sav', 'astiCuneo', 'autoviaPadana', 'sitaf', 'itp', 'spn']) {
+    OP[k].news = { kind: 'wp', base: OP[k].url.replace(/^(https:\/\/[^/]+\/).*$/, '$1') };
+  }
   const TRAFFIC_SOURCES = {
     cciss: { nome: 'CCISS Viaggiare informati', url: 'https://www.cciss.it/', nota: 'notiziario nazionale su tutte le strade' },
     anas: Object.assign({ nota: 'strade statali' }, OP.anas),
@@ -1904,14 +1910,130 @@
     return Array.from(found, ([ref, ops]) => ({ ref, ops }));
   }
 
-  /* link migliore per una segnalazione: il gestore della sua strada (del tratto, se si sa dove), altrimenti il CCISS */
-  function sourceForRoads(refs, at) {
+  /* gestore della strada di una segnalazione (del tratto, se si sa dove), o null */
+  function incidentOperator(refs, at) {
     for (const r of refs || []) {
       const ref = roadRefs(r)[0] || String(r).toUpperCase().replace(/\s+/g, '');
       const op = roadOperators(ref, at).find((o) => o.url);
-      if (op) return { nome: op.nome, url: op.url };
+      if (op) return op;
     }
-    return { nome: TRAFFIC_SOURCES.cciss.nome, url: TRAFFIC_SOURCES.cciss.url };
+    return null;
+  }
+
+  /* link migliore per una segnalazione: il gestore della sua strada (del tratto, se si sa dove), altrimenti il CCISS */
+  function sourceForRoads(refs, at) {
+    const op = incidentOperator(refs, at);
+    return op ? { nome: op.nome, url: op.url } : { nome: TRAFFIC_SOURCES.cciss.nome, url: TRAFFIC_SOURCES.cciss.url };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Comunicati dei gestori: l'articolo che parla di una segnalazione    */
+  /* ------------------------------------------------------------------ */
+  function normTxt(s) {
+    return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  }
+  function decodeHtml(s) {
+    return String(s || '').replace(/&#(\d+);/g, (m, n) => String.fromCharCode(Number(n))).replace(/&#x([0-9a-f]+);/gi, (m, n) => String.fromCharCode(parseInt(n, 16)))
+      .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&');
+  }
+  const IT_MESI = { gennaio: 0, febbraio: 1, marzo: 2, aprile: 3, maggio: 4, giugno: 5, luglio: 6, agosto: 7, settembre: 8, ottobre: 9, novembre: 10, dicembre: 11 };
+  /* "25 ottobre 2026" → ms (mezzogiorno) */
+  function parseItDate(s) {
+    const m = /(\d{1,2})\s+([a-z]+)\s+(\d{4})/i.exec(String(s || ''));
+    if (!m || IT_MESI[m[2].toLowerCase()] == null) return null;
+    return new Date(Number(m[3]), IT_MESI[m[2].toLowerCase()], Number(m[1]), 12).getTime();
+  }
+
+  /* elenco dei comunicati di viabilità di Autostrade per l'Italia (pagina di ricerca) → [{ title, url, date }] */
+  function parseAspiBulletins(html) {
+    const out = [];
+    const re = /class="py-3">\s*([^<]*?)\s*<\/div>\s*<div class="p-2">\s*<a[^>]*href="([^"]*\/bulletin\/view\/[^"]+)"[^>]*>([^<]+)<\/a>/g;
+    let m;
+    while ((m = re.exec(String(html || '')))) {
+      const url = /^https?:/.test(m[2]) ? m[2] : 'https://www.autostrade.it' + m[2];
+      out.push({ title: decodeHtml(m[3]).replace(/\s+/g, ' ').trim(), url, date: parseItDate(m[1]) });
+    }
+    return out;
+  }
+
+  /* articoli di un sito WordPress (wp-json/wp/v2/posts) → [{ title, url, date }] */
+  function parseWpPosts(data) {
+    return (Array.isArray(data) ? data : []).map((p) => ({
+      title: decodeHtml(p && p.title && p.title.rendered).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim(),
+      url: p && p.link, date: p && p.date ? Date.parse(p.date) || null : null,
+    })).filter((n) => n.title && /^https:\/\//.test(n.url || ''));
+  }
+
+  /* località di una segnalazione TomTom: "Valsamoggia (Milano-Napoli/A1)" → "Valsamoggia" */
+  function incidentPlaces(x) {
+    const out = [];
+    for (const s of [x && x.from, x && x.to]) {
+      const p = String(s || '').replace(/\([^)]*\)/g, ' ').replace(/\b(uscita|entrata|svincolo|casello|stazione di|stazione)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+      if (normTxt(p).length >= 3 && !out.some((o) => normTxt(o) === normTxt(p))) out.push(p);
+    }
+    return out;
+  }
+
+  /*
+   * Il comunicato che parla della segnalazione: stessa autostrada (la sigla all'inizio del titolo), almeno una
+   * delle località, tipo di evento coerente, pubblicato da 15 giorni prima a 2 giorni dopo l'inizio.
+   */
+  function matchNews(x, list, now) {
+    const places = incidentPlaces(x).map(normTxt);
+    if (!places.length) return null;
+    const roads = (x.roads || []).map((r) => roadRefs(r)[0]).filter((r) => r && /^A\d/.test(r));
+    let ref = x.start ? Date.parse(x.start) : NaN;
+    if (!isFinite(ref)) ref = now;
+    const closure = x.cat === 'chiusura', works = x.cat === 'cantiere' || x.cat === 'corsia';
+    const jam = x.cat === 'coda' || /incident/i.test(x.desc || '');
+    let best = null, bestS = 0;
+    for (const n of list || []) {
+      if (!n || !n.url || !n.title) continue;
+      if (n.date != null && (n.date > ref + 2 * 864e5 || n.date < ref - 15 * 864e5)) continue;
+      const t = ' ' + normTxt(n.title) + ' ';
+      let s = 0;
+      const lead = roadRefs(String(n.title).split(':')[0]).filter((r) => /^A\d/.test(r));
+      if (roads.length && lead.length) {
+        if (!lead.some((r) => roads.includes(r))) continue; // parla di un'altra autostrada
+        s += 2;
+      }
+      const hit = places.filter((p) => t.includes(' ' + p + ' '));
+      if (!hit.length) continue;
+      s += 3 * hit.length;
+      // il tipo di evento deve corrispondere: una chiusura non è una coda
+      const okType = closure ? /\bchius/.test(t) : works ? /\b(lavori|cantier|chius|restringiment|scambio di carreggiata)/.test(t)
+        : jam ? /\b(incidente|coda|code|rallentament|traffico intenso)/.test(t) : true;
+      if (!okType) continue;
+      s += closure || works || jam ? 2 : 0;
+      if (places.length > 1 && /\b(tratto|tra)\b/.test(t)) s += 1;
+      if (/\barea di servizio\b/.test(t)) s -= 3; // riguarda un'area di servizio, non la carreggiata
+      if (closure && places.length > 1 && hit.length < 2 && /\b(stazione|uscita|entrata)\b/.test(t)) s -= 1;
+      if (/\brisolt/.test(t) && x.cat !== 'altro') s -= 1;
+      if (n.date != null) s += Math.max(0, 1 - Math.abs(ref - n.date) / (15 * 864e5)); // a parità, il più vicino
+      if (s > bestS) { bestS = s; best = n; }
+    }
+    return bestS >= 5 ? best : null;
+  }
+
+  /*
+   * Gestori che pubblicano le chiusure in un riepilogo settimanale ("Riepilogo chiusure tratta A12",
+   * "Chiusure 19 – 26 ottobre"): per una chiusura o un cantiere senza comunicato proprio, il riepilogo più recente.
+   */
+  function matchNewsSummary(x, list, now) {
+    if (!(x.cat === 'chiusura' || x.cat === 'cantiere' || x.cat === 'corsia')) return null;
+    const roads = (x.roads || []).map((r) => roadRefs(r)[0]).filter(Boolean);
+    let ref = x.start ? Date.parse(x.start) : NaN;
+    if (!isFinite(ref) || ref < now - 8 * 864e5) ref = now;
+    let best = null;
+    for (const n of list || []) {
+      if (!n || !n.title || n.date == null || n.date > ref + 864e5 || n.date < ref - 8 * 864e5) continue;
+      const t = normTxt(n.title);
+      if (!/\bchiusur/.test(t) || !/\b(riepilogo|programmazione|settimana)\b|\d{1,2} \d{1,2} [a-z]+|\bdal \d/.test(t)) continue;
+      const tr = roadRefs(n.title).filter((r) => /^A\d/.test(r));
+      if (tr.length && roads.length && !tr.some((r) => roads.includes(r))) continue;
+      if (!best || n.date > best.date) best = n;
+    }
+    return best ? Object.assign({ riepilogo: true }, best) : null;
   }
 
   /* ------------------------------------------------------------------ */
@@ -2476,7 +2598,7 @@
     PARK_NEAR, PARK_FAR, ringArea, parkingKind, pickParkings, nearOfficial, blockersNear, makeRouteWays,
     trafficBoxes, matchIncidents, incidentStatus, trafficDelay,
     PLACE_LABEL, placeKind, placesFromTile, placeCandidates, pickPlaces, placeEstimateMin,
-    TRAFFIC_SOURCES, roadRefs, roadOperators, routeOperators, sourceForRoads, avoidPoints, mergeAvoid, walkEstimate,
+    TRAFFIC_SOURCES, roadRefs, roadOperators, routeOperators, sourceForRoads, incidentOperator, parseAspiBulletins, parseWpPosts, incidentPlaces, matchNews, matchNewsSummary, avoidPoints, mergeAvoid, walkEstimate,
     zonesFromTile, zoneRule, zoneStatus, zoneWhen, zoneWebsite, zoneCrossings, zoneAvoidPoints, inZone,
   };
 });
